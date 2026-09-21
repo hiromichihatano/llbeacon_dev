@@ -67,3 +67,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# PlatformIO build artifacts and machine-specific VS Code configuration
+.pio/
+.vscode/c_cpp_properties.json
+.vscode/launch.json
