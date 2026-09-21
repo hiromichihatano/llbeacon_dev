@@ -811,7 +811,6 @@ CONFIG_COMPILER_CXX_GLIBCXX_CONSTEXPR_NO_CHANGE=y
 #
 # Bluetooth
 #
-# default:
 # CONFIG_BT_ENABLED is not set
 
 #
@@ -1165,30 +1164,10 @@ CONFIG_SPI_SLAVE_ISR_IN_IRAM=y
 #
 # Ethernet
 #
-# default:
-CONFIG_ETH_ENABLED=y
-# default:
-CONFIG_ETH_USE_ESP32_EMAC=y
-# default:
-CONFIG_ETH_DMA_BUFFER_SIZE=512
-# default:
-CONFIG_ETH_DMA_RX_BUFFER_NUM=10
-# default:
-CONFIG_ETH_DMA_TX_BUFFER_NUM=10
-# default:
-# CONFIG_ETH_IRAM_OPTIMIZATION is not set
-
-#
-# Ethernet Clock
-#
-# end of Ethernet Clock
-
-# default:
-CONFIG_ETH_USE_SPI_ETHERNET=y
+# CONFIG_ETH_USE_ESP32_EMAC is not set
+# CONFIG_ETH_USE_SPI_ETHERNET is not set
 # default:
 # CONFIG_ETH_USE_OPENETH is not set
-# default:
-# CONFIG_ETH_TRANSMIT_MUTEX is not set
 # end of Ethernet
 
 #

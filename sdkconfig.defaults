@@ -1,0 +1,9 @@
+# Disable unused peripherals to save flash and build time.
+# USB/UART console, GPIO, and LED peripherals remain enabled by default.
+#
+# ESP_WIFI_ENABLED reflects Wi-Fi hardware capability and has no user
+# prompt, so it cannot be disabled here; the Wi-Fi driver is not
+# initialized (and consumes no power) unless app code calls esp_wifi_init().
+CONFIG_ETH_USE_SPI_ETHERNET=n
+CONFIG_ETH_USE_ESP32_EMAC=n
+CONFIG_BT_ENABLED=n
