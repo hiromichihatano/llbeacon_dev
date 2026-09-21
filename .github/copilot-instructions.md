@@ -2,24 +2,25 @@
 
 ## Build, flash, and test
 
-This is a PlatformIO project targeting an M5Stack AtomS3 (`esp32s3`) with the
-ESP-IDF framework. Run commands from the repository root:
+This is a PlatformIO project targeting two M5Stack boards with the ESP-IDF
+framework: AtomS3 Lite (`env:m5stack-atoms3`, ESP32-S3) and Atom Lite
+(`env:m5stack-atom`, ESP32). Run commands from the repository root, replacing
+`<env>` with the target environment:
 
 ```sh
-# Build the firmware
-pio run -e m5stack-atoms3
+# Build the firmware for both boards
+pio run -e m5stack-atoms3 -e m5stack-atom
 
-# Flash the connected board
-pio run -e m5stack-atoms3 -t upload
-
-# Open the serial monitor
-pio device monitor -e m5stack-atoms3
+# Build/flash/monitor a single board
+pio run -e <env>
+pio run -e <env> -t upload
+pio device monitor -e <env>
 
 # Run all PlatformIO tests
-pio test -e m5stack-atoms3
+pio test -e <env>
 
 # Run one named test suite in test/<suite-name>/
-pio test -e m5stack-atoms3 -f <suite-name>
+pio test -e <env> -f <suite-name>
 ```
 
 No lint or formatting command is configured. The native ESP-IDF CMake entry
@@ -28,28 +29,49 @@ point is also present: after exporting the ESP-IDF environment, use
 
 ## Architecture
 
-- `platformio.ini` defines the single build environment. Keep the environment
-  name `m5stack-atoms3` in commands and generated debug configuration.
+- `platformio.ini` defines one environment per supported board. Each
+  environment sets a `-DLLBEACON_BOARD_*` build flag (`LLBEACON_BOARD_ATOMS3_LITE`
+  or `LLBEACON_BOARD_ATOM_LITE`) that selects the board at compile time.
+  Adding a new board (e.g. a future S3Matrix/S3R) means adding a new
+  `[env:...]` section with its own `LLBEACON_BOARD_*` flag.
+- `include/llbeacon_board.h` maps each `LLBEACON_BOARD_*` flag to that board's
+  GPIO assignments (`LLBEACON_BUTTON_GPIO`, `LLBEACON_RGB_LED_GPIO`,
+  `LLBEACON_IR_GPIO`, `LLBEACON_I2C_SDA_GPIO`, `LLBEACON_I2C_SCL_GPIO`).
+  Application code must use these symbolic names, never raw GPIO numbers, so
+  the same source builds correctly for every board. The header fails the
+  build (`#error`) if no known board flag is defined; extend it with an
+  `#elif defined(...)` branch when adding a new board.
 - The root `CMakeLists.txt` bootstraps ESP-IDF. `src/CMakeLists.txt` registers
   the application component and recursively adds every file under `src/` as a
   component source.
 - ESP-IDF starts the firmware at `app_main()` in `src/main.c`; it is currently
-  the only application source and intentionally contains an empty entry point.
-  Add firmware behavior from that ESP-IDF entry point and split reusable
-  modules beneath `src/` as the application grows.
+  the only application source and intentionally contains an empty entry point
+  beyond including `llbeacon_board.h`. Add firmware behavior from that
+  ESP-IDF entry point and split reusable modules beneath `src/` as the
+  application grows.
 - Put application headers in `include/`, private PlatformIO libraries in
   `lib/<library>/`, and PlatformIO test suites in `test/<suite-name>/`.
   PlatformIO compiles private libraries and discovers their dependencies from
   source includes.
+- `sdkconfig.defaults` disables peripherals not used by this project
+  (`CONFIG_ETH_USE_SPI_ETHERNET`, `CONFIG_ETH_USE_ESP32_EMAC`,
+  `CONFIG_BT_ENABLED`), keeping USB/UART console, GPIO, and LED support
+  enabled. Wi-Fi hardware-capability flags (`CONFIG_SOC_WIFI_SUPPORTED`,
+  `CONFIG_ESP_WIFI_ENABLED`) cannot be disabled via Kconfig and carry no
+  runtime cost unless application code calls `esp_wifi_init()`. When enabling
+  a new peripheral for a future feature (e.g. an I2S speaker HAT), add its
+  Kconfig option here rather than relying on ESP-IDF defaults.
 
 ## Project-specific conventions
 
 - Preserve the ESP-IDF application model: use `app_main()`, not a hosted C
   `main()` function.
-- `sdkconfig.m5stack-atoms3` is an ESP-IDF-generated configuration for this
-  board (ESP-IDF 6.1.0, 2 MB flash, single-app partition layout). Do not edit
-  generated settings by hand; update them through the ESP-IDF/PlatformIO
-  configuration flow and retain the generated file.
-- `.vscode/launch.json` is PlatformIO-generated and includes
-  machine-specific absolute paths. Regenerate it through PlatformIO rather
-  than manually adapting paths for a different workstation.
+- `sdkconfig.m5stack-atoms3` and `sdkconfig.m5stack-atom` are ESP-IDF-generated
+  configurations for each board (ESP-IDF 6.1.0). Do not edit generated
+  settings by hand; update them through `sdkconfig.defaults` or the
+  ESP-IDF/PlatformIO configuration flow, then regenerate and retain the
+  generated files.
+- `.vscode/launch.json` and `.vscode/c_cpp_properties.json` are
+  PlatformIO-generated, include machine-specific absolute paths, and are
+  gitignored. Regenerate them through PlatformIO rather than manually
+  adapting paths for a different workstation.
