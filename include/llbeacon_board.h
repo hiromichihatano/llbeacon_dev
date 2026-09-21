@@ -1,0 +1,19 @@
+#pragma once
+
+#include "driver/gpio.h"
+
+#ifdef LLBEACON_BOARD_ATOMS3_LITE
+#define LLBEACON_BUTTON_GPIO GPIO_NUM_41
+#define LLBEACON_RGB_LED_GPIO GPIO_NUM_35
+#define LLBEACON_IR_GPIO GPIO_NUM_4
+#define LLBEACON_I2C_SDA_GPIO GPIO_NUM_1
+#define LLBEACON_I2C_SCL_GPIO GPIO_NUM_2
+#elif defined(LLBEACON_BOARD_ATOM_LITE)
+#define LLBEACON_BUTTON_GPIO GPIO_NUM_39
+#define LLBEACON_RGB_LED_GPIO GPIO_NUM_27
+#define LLBEACON_IR_GPIO GPIO_NUM_12
+#define LLBEACON_I2C_SDA_GPIO GPIO_NUM_25
+#define LLBEACON_I2C_SCL_GPIO GPIO_NUM_21
+#else
+#error "Select exactly one supported LLBeacon board target."
+#endif
