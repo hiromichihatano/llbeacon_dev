@@ -70,5 +70,6 @@ Testing/
 
 # PlatformIO build artifacts and machine-specific VS Code configuration
 .pio/
+managed_components/
 .vscode/c_cpp_properties.json
 .vscode/launch.json
