@@ -16,6 +16,10 @@ time via the `LLBEACON_BOARD_*` flag set per environment in
 symbolic GPIO names from that header instead of raw pin numbers, so it keeps
 working when a new board target is added.
 
+The current firmware blinks the onboard RGB LED red at 500 ms intervals using
+Espressif's official [`espressif/led_strip`](https://components.espressif.com/components/espressif/led_strip)
+component.
+
 Unused peripherals (Ethernet, Bluetooth) are disabled by default in
 [`sdkconfig.defaults`](sdkconfig.defaults) to save flash and build time; the
 USB/UART console, GPIO, and LED support required for current and planned

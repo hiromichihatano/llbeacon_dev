@@ -36,7 +36,8 @@ point is also present: after exporting the ESP-IDF environment, use
   `[env:...]` section with its own `LLBEACON_BOARD_*` flag.
 - `include/llbeacon_board.h` maps each `LLBEACON_BOARD_*` flag to that board's
   GPIO assignments (`LLBEACON_BUTTON_GPIO`, `LLBEACON_RGB_LED_GPIO`,
-  `LLBEACON_IR_GPIO`, `LLBEACON_I2C_SDA_GPIO`, `LLBEACON_I2C_SCL_GPIO`).
+  `LLBEACON_RGB_LED_COUNT`, `LLBEACON_IR_GPIO`, `LLBEACON_I2C_SDA_GPIO`,
+  `LLBEACON_I2C_SCL_GPIO`).
   Application code must use these symbolic names, never raw GPIO numbers, so
   the same source builds correctly for every board. The header fails the
   build (`#error`) if no known board flag is defined; extend it with an
@@ -45,10 +46,10 @@ point is also present: after exporting the ESP-IDF environment, use
   the application component and recursively adds every file under `src/` as a
   component source.
 - ESP-IDF starts the firmware at `app_main()` in `src/main.c`; it is currently
-  the only application source and intentionally contains an empty entry point
-  beyond including `llbeacon_board.h`. Add firmware behavior from that
-  ESP-IDF entry point and split reusable modules beneath `src/` as the
-  application grows.
+  the only application source and blinks all onboard RGB LEDs red at 500 ms
+  intervals. It uses Espressif's `espressif/led_strip` component with the RMT
+  backend. Add firmware behavior from that ESP-IDF entry point and split
+  reusable modules beneath `src/` as the application grows.
 - Put application headers in `include/`, private PlatformIO libraries in
   `lib/<library>/`, and PlatformIO test suites in `test/<suite-name>/`.
   PlatformIO compiles private libraries and discovers their dependencies from
@@ -61,6 +62,10 @@ point is also present: after exporting the ESP-IDF environment, use
   runtime cost unless application code calls `esp_wifi_init()`. When enabling
   a new peripheral for a future feature (e.g. an I2S speaker HAT), add its
   Kconfig option here rather than relying on ESP-IDF defaults.
+- External ESP-IDF dependencies are declared in `src/idf_component.yml`.
+  `dependencies.lock.esp32` and `dependencies.lock.esp32s3` pin exact
+  component versions for each target and must be committed. The downloaded
+  `managed_components/` directory is generated and gitignored.
 
 ## Project-specific conventions
 
