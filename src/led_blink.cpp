@@ -1,5 +1,6 @@
 #include "led_blink.h"
 
+#include <atomic>
 #include <cstdint>
 
 #include "freertos/FreeRTOS.h"
@@ -14,6 +15,8 @@
 #define LED_BLINK_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 
 static led_strip_handle_t rgb_led;
+static TaskHandle_t led_blink_task_handle;
+static std::atomic<bool> led_blink_enabled{true};
 
 static void set_leds(bool on)
 {
@@ -33,6 +36,13 @@ static void led_blink_task(void *arg)
     (void)arg;
 
     while (true) {
+        if (!led_blink_enabled.load()) {
+            set_leds(false);
+            // Sleep until led_blink_set_enabled(true) wakes this task up.
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
+
         set_leds(true);
         vTaskDelay(pdMS_TO_TICKS(LED_BLINK_PERIOD_MS));
         set_leds(false);
@@ -58,5 +68,15 @@ void led_blink_start(void)
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &rgb_led));
     ESP_ERROR_CHECK(led_strip_clear(rgb_led));
 
-    xTaskCreate(led_blink_task, "led_blink", LED_BLINK_TASK_STACK_SIZE, nullptr, LED_BLINK_TASK_PRIORITY, nullptr);
+    xTaskCreate(led_blink_task, "led_blink", LED_BLINK_TASK_STACK_SIZE, nullptr, LED_BLINK_TASK_PRIORITY,
+                &led_blink_task_handle);
 }
+
+void led_blink_set_enabled(bool enabled)
+{
+    const bool was_enabled = led_blink_enabled.exchange(enabled);
+    if (enabled && !was_enabled && led_blink_task_handle != nullptr) {
+        xTaskNotifyGive(led_blink_task_handle);
+    }
+}
+
