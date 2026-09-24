@@ -1,7 +1,6 @@
 #include "led_blink.h"
 
-#include <stdbool.h>
-#include <stdint.h>
+#include <cstdint>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -46,13 +45,18 @@ void led_blink_start(void)
     const led_strip_config_t strip_config = {
         .strip_gpio_num = LLBEACON_RGB_LED_GPIO,
         .max_leds = LLBEACON_RGB_LED_COUNT,
+        .led_model = LED_MODEL_WS2812,
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        .flags = {.invert_out = 0},
     };
     const led_strip_rmt_config_t rmt_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = 10 * 1000 * 1000,
-        .flags.with_dma = false,
+        .mem_block_symbols = 0,
+        .flags = {.with_dma = false},
     };
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &rgb_led));
     ESP_ERROR_CHECK(led_strip_clear(rgb_led));
 
-    xTaskCreate(led_blink_task, "led_blink", LED_BLINK_TASK_STACK_SIZE, NULL, LED_BLINK_TASK_PRIORITY, NULL);
+    xTaskCreate(led_blink_task, "led_blink", LED_BLINK_TASK_STACK_SIZE, nullptr, LED_BLINK_TASK_PRIORITY, nullptr);
 }
