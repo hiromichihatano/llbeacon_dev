@@ -1,19 +1,21 @@
 #pragma once
 
 /**
- * Initializes the onboard RGB LED strip and starts a FreeRTOS task that
- * blinks it red at a fixed interval.
+ * @brief オンボードRGB LEDストリップを初期化し、一定間隔で赤色に点滅させる
+ *        FreeRTOSタスクを起動する
  *
- * Must be called once, after the scheduler has not yet necessarily started
- * (safe to call from app_main()).
+ * app_main() から一度だけ呼び出すこと(スケジューラ開始前でも呼び出し可能)。
  */
 void led_blink_start(void);
 
 /**
- * Enables or disables the LED blinking.
- * When disabled, the LED strip is immediately turned off and the blink task
- * stays idle until re-enabled.
+ * @brief LED点滅の有効/無効を切り替える
  *
- * Safe to call from any task. Must be called after led_blink_start().
+ * 無効化すると即座にLEDを消灯し、再度有効化されるまで点滅タスクは待機する。
+ *
+ * @param enabled true で点滅を有効化、false で無効化(消灯)
+ *
+ * @note どのタスクから呼び出しても安全。led_blink_start() の呼び出し後に
+ *       使用すること。
  */
 void led_blink_set_enabled(bool enabled);

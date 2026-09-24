@@ -45,11 +45,16 @@ point is also present: after exporting the ESP-IDF environment, use
 - The root `CMakeLists.txt` bootstraps ESP-IDF. `src/CMakeLists.txt` registers
   the application component and recursively adds every file under `src/` as a
   component source.
-- ESP-IDF starts the firmware at `app_main()` in `src/main.c`; it is currently
-  the only application source and blinks all onboard RGB LEDs red at 500 ms
-  intervals. It uses Espressif's `espressif/led_strip` component with the RMT
-  backend. Add firmware behavior from that ESP-IDF entry point and split
-  reusable modules beneath `src/` as the application grows.
+- ESP-IDF starts the firmware at `app_main()` in `src/main.cpp`. Application
+  sources are C++ (ESP-IDF's `app_main()` must stay declared `extern "C"`
+  since ESP-IDF calls it with C linkage). LED blinking lives in
+  `src/led_blink.cpp` / `include/led_blink.h` (starts a FreeRTOS task,
+  exposes `led_blink_start()` / `led_blink_set_enabled()`); the UART CLI
+  lives in `src/uart_cli.cpp` / `include/uart_cli.h` (reads UART0 via the
+  ESP-IDF driver's interrupt-driven event queue and feeds bytes to an
+  `embedded-cli` instance in a dedicated FreeRTOS task; supports `led 0` /
+  `led 1` commands). Split further reusable modules beneath `src/` (with a
+  matching header in `include/`) as the application grows.
 - Put application headers in `include/`, private PlatformIO libraries in
   `lib/<library>/`, and PlatformIO test suites in `test/<suite-name>/`.
   PlatformIO compiles private libraries and discovers their dependencies from
@@ -66,11 +71,26 @@ point is also present: after exporting the ESP-IDF environment, use
   `dependencies.lock.esp32` and `dependencies.lock.esp32s3` pin exact
   component versions for each target and must be committed. The downloaded
   `managed_components/` directory is generated and gitignored.
+- PlatformIO library dependencies (e.g. `olmanqj/embedded-cli`, declared as
+  `lib_deps` in `platformio.ini`) are downloaded per-environment under
+  `.pio/libdeps/<env>/<library-name>/` (generated, gitignored, not present
+  until after a build). Their headers (e.g. `embedded_cli.h`) live under
+  that library's `lib/include/` subdirectory. Do not search the whole
+  filesystem for these; check `.pio/libdeps/<env>/` first, and fall back to
+  `~/.platformio/packages/framework-espidf/components/` for ESP-IDF
+  framework components (e.g. `driver/uart.h`, FreeRTOS headers) or
+  `~/.platformio/packages/toolchain-xtensa-esp-elf/` for the cross-compiler
+  toolchain and its bundled libc/libstdc++ headers. All file/text searches
+  should stay scoped under the repository root or `$HOME`, never `/`.
 
 ## Project-specific conventions
 
 - Preserve the ESP-IDF application model: use `app_main()`, not a hosted C
   `main()` function.
+- Application code is C++. Add a Doxygen-style comment (in Japanese) to every
+  function; on public API declared in `include/*.h`, put the full comment on
+  the header declaration and use `/** @copydoc <name> */` on the matching
+  definition in `src/*.cpp` to avoid duplicating it.
 - `sdkconfig.m5stack-atoms3` and `sdkconfig.m5stack-atom` are ESP-IDF-generated
   configurations for each board (ESP-IDF 6.1.0). Do not edit generated
   settings by hand; update them through `sdkconfig.defaults` or the

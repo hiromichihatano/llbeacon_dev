@@ -22,12 +22,29 @@
 static QueueHandle_t uart_event_queue;
 static EmbeddedCli *cli;
 
+/**
+ * @brief embedded-cliが1文字出力するたびに呼ばれるコールバック
+ *
+ * 受け取った文字をそのままUART0へ書き込む。
+ *
+ * @param embedded_cli 呼び出し元のCLIインスタンス(未使用)
+ * @param c            出力する1文字
+ */
 static void cli_write_char(EmbeddedCli *embedded_cli, char c)
 {
     (void)embedded_cli;
     uart_write_bytes(UART_CLI_PORT, &c, 1);
 }
 
+/**
+ * @brief "led" コマンドのバインディング関数
+ *
+ * 第1引数が "1" ならLED点滅を有効化、"0" なら無効化する。
+ *
+ * @param embedded_cli 呼び出し元のCLIインスタンス(未使用)
+ * @param args         トークン化済みの引数文字列("0" または "1")
+ * @param context      未使用のコンテキストポインタ
+ */
 static void led_command_binding(EmbeddedCli *embedded_cli, char *args, void *context)
 {
     (void)embedded_cli;
@@ -41,6 +58,16 @@ static void led_command_binding(EmbeddedCli *embedded_cli, char *args, void *con
     }
 }
 
+/**
+ * @brief UART受信イベントをCLIへ橋渡しするFreeRTOSタスク本体
+ *
+ * uart_driver_install() が生成するイベントキューを待ち受け、UART_DATA
+ * イベント受信時に受信バイトを読み出して embeddedCliReceiveChar() へ
+ * 1バイトずつ渡し、embeddedCliProcess() でコマンド処理を行う。
+ * バッファ溢れが発生した場合は受信バッファとキューをクリアして復旧する。
+ *
+ * @param arg 未使用
+ */
 static void uart_cli_task(void *arg)
 {
     (void)arg;
@@ -75,6 +102,7 @@ static void uart_cli_task(void *arg)
     }
 }
 
+/** @copydoc uart_cli_start */
 void uart_cli_start(void)
 {
     uart_config_t uart_config = {};

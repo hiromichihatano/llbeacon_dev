@@ -18,6 +18,11 @@ static led_strip_handle_t rgb_led;
 static TaskHandle_t led_blink_task_handle;
 static std::atomic<bool> led_blink_enabled{true};
 
+/**
+ * @brief RGB LEDストリップを指定した状態(点灯/消灯)に設定する
+ *
+ * @param on true で全LEDを赤色に点灯、false で消灯する
+ */
 static void set_leds(bool on)
 {
     if (on) {
@@ -31,6 +36,15 @@ static void set_leds(bool on)
     ESP_ERROR_CHECK(led_strip_clear(rgb_led));
 }
 
+/**
+ * @brief LED点滅を行うFreeRTOSタスク本体
+ *
+ * led_blink_enabled が false の間はLEDを消灯した状態でタスク通知を待って
+ * スリープし、true になると led_blink_set_enabled() からの通知で起床して
+ * 点滅処理を再開する。
+ *
+ * @param arg 未使用
+ */
 static void led_blink_task(void *arg)
 {
     (void)arg;
@@ -50,6 +64,7 @@ static void led_blink_task(void *arg)
     }
 }
 
+/** @copydoc led_blink_start */
 void led_blink_start(void)
 {
     const led_strip_config_t strip_config = {
@@ -72,6 +87,7 @@ void led_blink_start(void)
                 &led_blink_task_handle);
 }
 
+/** @copydoc led_blink_set_enabled */
 void led_blink_set_enabled(bool enabled)
 {
     const bool was_enabled = led_blink_enabled.exchange(enabled);
