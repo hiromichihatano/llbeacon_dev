@@ -61,4 +61,7 @@ USB/UART コンソール、GPIO、LED と、将来的な GPIO 接続のスピー
 必要はありません）。
 
 ビルド・書き込み・テストの詳細なコマンドとプロジェクトの規約は
-[`.github/copilot-instructions.md`](.github/copilot-instructions.md) を参照してください。
+[`AGENTS.md`](AGENTS.md) にまとめています。GitHub Copilot のうち `AGENTS.md` を
+読まない画面（github.com の Copilot Chat、Visual Studio / JetBrains / Eclipse /
+Xcode のチャットなど）向けの要約は
+[`.github/copilot-instructions.md`](.github/copilot-instructions.md) にあります。
