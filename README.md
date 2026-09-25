@@ -25,7 +25,7 @@ GPIO 番号を直接使用せず、このヘッダのシンボル名を使用し
 [`src/button.cpp`](src/button.cpp) / [`include/button.h`](include/button.h) で
 判定し、dimmer モード遷移に反映します。
 
-また、[olmanqj/embedded-cli] ライブラリを使った簡易 CLI を提供しています
+また、[funbiscuit/embedded-cli] ライブラリを使った簡易 CLI を提供しています
 （[`src/uart_cli.cpp`](src/uart_cli.cpp) /
 [`include/uart_cli.h`](include/uart_cli.h)）。入出力先はボードで切り替わり、
 Atom Lite は UART0、AtomS3 Lite は USB Serial JTAG を使用します。専用
@@ -43,7 +43,7 @@ FreeRTOS タスクが受信データを取り出して CLI に渡します。以
 設計は [`docs/led-control-design.md`](docs/led-control-design.md) と
 [`docs/led-control-ui.md`](docs/led-control-ui.md) を参照してください。
 
-[olmanqj/embedded-cli]: https://registry.platformio.org/libraries/olmanqj/embedded-cli
+[funbiscuit/embedded-cli]: https://github.com/funbiscuit/embedded-cli
 
 アプリケーションコードは C++（ESP-IDF の `app_main()` は `extern "C"` で宣言）
 で記述しています。関数には Doxygen 形式・日本語のコメントを付ける方針です。
@@ -55,8 +55,8 @@ USB/UART コンソール、GPIO、LED と、将来的な GPIO 接続のスピー
 
 ## 依存ライブラリ・ファイルの置き場所
 
-- `platformio.ini` の `lib_deps` で指定した PlatformIO ライブラリ（例:
-  `olmanqj/embedded-cli`）は、ビルド後に環境ごとの
+- `platformio.ini` の `lib_deps` で指定したライブラリ（例:
+  `https://github.com/funbiscuit/embedded-cli.git#v0.1.4`）は、ビルド後に環境ごとの
   `.pio/libdeps/<env>/<ライブラリ名>/` 以下にダウンロードされます
   （生成物のため Git 管理外・未ビルド時は存在しません）。ヘッダは
   そのライブラリの `lib/include/` 配下にあります。

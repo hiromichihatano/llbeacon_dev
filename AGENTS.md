@@ -98,7 +98,8 @@ this repository, and cite the issue number when a change implements one.
   `managed_components/`. `dependencies.lock.esp32` / `dependencies.lock.esp32s3`
   pin exact versions per target and must be committed.
 - PlatformIO library dependencies (`lib_deps` in `platformio.ini`, e.g.
-  `olmanqj/embedded-cli`) are downloaded per environment into
+  `https://github.com/funbiscuit/embedded-cli.git#v0.1.4`) are downloaded per
+  environment into
   `.pio/libdeps/<env>/<library>/` — generated, gitignored, and absent until a
   build runs.
 - `.vscode/launch.json` and `.vscode/c_cpp_properties.json` are
