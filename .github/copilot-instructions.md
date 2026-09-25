@@ -91,6 +91,12 @@ point is also present: after exporting the ESP-IDF environment, use
   function; on public API declared in `include/*.h`, put the full comment on
   the header declaration and use `/** @copydoc <name> */` on the matching
   definition in `src/*.cpp` to avoid duplicating it.
+- Initialize ESP-IDF/driver structs (e.g. `uart_config_t`, `CliCommandBinding`,
+  `led_strip_config_t`) with a single C++20 designated-initializer literal
+  (`const T value = { .field = ..., .nested = {.field = ...} };`) instead of
+  declaring `T value = {};` and assigning each field afterward. Prefer `const`
+  for structs that are not mutated after initialization. See
+  `src/led_blink.cpp` and `src/uart_cli.cpp` for examples.
 - `sdkconfig.m5stack-atoms3` and `sdkconfig.m5stack-atom` are ESP-IDF-generated
   configurations for each board (ESP-IDF 6.1.0). Do not edit generated
   settings by hand; update them through `sdkconfig.defaults` or the
