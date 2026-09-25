@@ -39,18 +39,23 @@ FreeRTOS タスクが受信データを取り出して CLI に渡します。以
 - `led mode <active|dimmer1|dimmer2|sleep|notification>` — 強制モード遷移
 - `led status [--json]` — 現在の設定を表示
 
+また、AtomS3 Lite + Atomic Voice Base (A149) では、ボタン短押時に短い sine wave を
+小音量で再生します（[`src/audio_tone.cpp`](src/audio_tone.cpp) /
+[`include/audio_tone.h`](include/audio_tone.h)、[esp_codec_dev] 使用）。
+
 仕様の詳細は [`docs/led-control-requirements.md`](docs/led-control-requirements.md)、
 設計は [`docs/led-control-design.md`](docs/led-control-design.md) と
 [`docs/led-control-ui.md`](docs/led-control-ui.md) を参照してください。
 
 [funbiscuit/embedded-cli]: https://github.com/funbiscuit/embedded-cli
+[esp_codec_dev]: https://components.espressif.com/components/espressif/esp_codec_dev
 
 アプリケーションコードは C++（ESP-IDF の `app_main()` は `extern "C"` で宣言）
 で記述しています。関数には Doxygen 形式・日本語のコメントを付ける方針です。
 
 未使用の Ethernet と Bluetooth は、フラッシュ容量とビルド時間を節約するため
 [`sdkconfig.defaults`](sdkconfig.defaults) でデフォルト無効にしています。
-USB/UART コンソール、GPIO、LED と、将来的な GPIO 接続のスピーカー HAT などに
+USB/UART コンソール、GPIO、LED、I2S オーディオ（Atomic Voice Base）に
 必要となる機能は有効のままです。
 
 ## 依存ライブラリ・ファイルの置き場所
