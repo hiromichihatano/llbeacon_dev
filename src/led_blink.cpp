@@ -9,6 +9,9 @@
 #include "led_strip.h"
 #include "llbeacon_board.h"
 
+namespace llbeacon {
+namespace led_blink {
+
 #define LED_BLINK_PERIOD_MS 500
 #define LED_BRIGHTNESS 16
 #define LED_BLINK_TASK_STACK_SIZE 2048
@@ -95,4 +98,7 @@ void led_blink_set_enabled(bool enabled)
         xTaskNotifyGive(led_blink_task_handle);
     }
 }
+
+}  // namespace led_blink
+}  // namespace llbeacon
 

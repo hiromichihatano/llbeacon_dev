@@ -1,5 +1,8 @@
 #pragma once
 
+namespace llbeacon {
+namespace uart_cli {
+
 /**
  * @brief UART0(console/USBシリアルと共用)を割り込み駆動のRX処理付きで初期化し、
  *        ドライバのイベントキューから受信バイトを取り出してembedded-cliに
@@ -12,3 +15,6 @@
  * @note app_main() から一度だけ呼び出すこと。
  */
 void uart_cli_start(void);
+
+}  // namespace uart_cli
+}  // namespace llbeacon

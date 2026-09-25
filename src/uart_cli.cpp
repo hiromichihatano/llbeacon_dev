@@ -10,6 +10,9 @@
 #include "embedded_cli.h"
 #include "led_blink.h"
 
+namespace llbeacon {
+namespace uart_cli {
+
 #define UART_CLI_PORT UART_NUM_0
 #define UART_CLI_BAUD_RATE 115200
 #define UART_CLI_RX_BUFFER_SIZE 256
@@ -52,9 +55,9 @@ static void led_command_binding(EmbeddedCli *embedded_cli, char *args, void *con
 
     const char *state = embeddedCliGetToken(args, 1);
     if (state != nullptr && std::strcmp(state, "1") == 0) {
-        led_blink_set_enabled(true);
+        llbeacon::led_blink::led_blink_set_enabled(true);
     } else if (state != nullptr && std::strcmp(state, "0") == 0) {
-        led_blink_set_enabled(false);
+        llbeacon::led_blink::led_blink_set_enabled(false);
     }
 }
 
@@ -137,3 +140,6 @@ void uart_cli_start(void)
 
     xTaskCreate(uart_cli_task, "uart_cli", UART_CLI_TASK_STACK_SIZE, nullptr, UART_CLI_TASK_PRIORITY, nullptr);
 }
+
+}  // namespace uart_cli
+}  // namespace llbeacon

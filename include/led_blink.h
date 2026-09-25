@@ -1,5 +1,8 @@
 #pragma once
 
+namespace llbeacon {
+namespace led_blink {
+
 /**
  * @brief オンボードRGB LEDストリップを初期化し、一定間隔で赤色に点滅させる
  *        FreeRTOSタスクを起動する
@@ -19,3 +22,6 @@ void led_blink_start(void);
  *       使用すること。
  */
 void led_blink_set_enabled(bool enabled);
+
+}  // namespace led_blink
+}  // namespace llbeacon

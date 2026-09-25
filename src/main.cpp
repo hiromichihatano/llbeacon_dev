@@ -8,6 +8,6 @@
  */
 extern "C" void app_main(void)
 {
-    led_blink_start();
-    uart_cli_start();
+    llbeacon::led_blink::led_blink_start();
+    llbeacon::uart_cli::uart_cli_start();
 }
