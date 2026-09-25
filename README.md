@@ -25,11 +25,12 @@ GPIO 番号を直接使用せず、このヘッダのシンボル名を使用し
 [`src/button.cpp`](src/button.cpp) / [`include/button.h`](include/button.h) で
 判定し、dimmer モード遷移に反映します。
 
-また、コンソールと共用の UART0 上で [olmanqj/embedded-cli] ライブラリを使った
-簡易 CLI を提供しています（[`src/uart_cli.cpp`](src/uart_cli.cpp) /
-[`include/uart_cli.h`](include/uart_cli.h)）。UART 受信は ESP-IDF ドライバの
-割り込み駆動イベントキューで処理し、専用 FreeRTOS タスクがキューから受信データを
-取り出して CLI に渡します。以下のコマンドに対応しています。
+また、[olmanqj/embedded-cli] ライブラリを使った簡易 CLI を提供しています
+（[`src/uart_cli.cpp`](src/uart_cli.cpp) /
+[`include/uart_cli.h`](include/uart_cli.h)）。入出力先はボードで切り替わり、
+Atom Lite は UART0、AtomS3 Lite は USB Serial JTAG を使用します。専用
+FreeRTOS タスクが受信データを取り出して CLI に渡します。以下のコマンドに
+対応しています。
 
 - `led set <pulse|flash|saw|sine> <RRGGBB> <RRGGBB> <100-60000>` — 光らせ方を一括設定
 - `led max <0-255>` — 最大輝度を設定

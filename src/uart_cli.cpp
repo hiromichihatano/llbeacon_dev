@@ -9,6 +9,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_err.h"
+#include "llbeacon_board.h"
+
+#if defined(LLBEACON_BOARD_ATOMS3_LITE)
+#include "driver/usb_serial_jtag.h"
+#define UART_CLI_USE_USB_SERIAL_JTAG 1
+#else
+#define UART_CLI_USE_USB_SERIAL_JTAG 0
+#endif
 
 #include "embedded_cli.h"
 #include "led_control.h"
@@ -25,7 +33,9 @@ namespace uart_cli {
 #define UART_CLI_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define UART_CLI_RX_CHUNK_SIZE 64
 
+#if !UART_CLI_USE_USB_SERIAL_JTAG
 static QueueHandle_t uart_event_queue;
+#endif
 static EmbeddedCli *cli;
 
 /**
@@ -39,7 +49,11 @@ static EmbeddedCli *cli;
 static void cli_write_char(EmbeddedCli *embedded_cli, char c)
 {
     (void)embedded_cli;
+#if UART_CLI_USE_USB_SERIAL_JTAG
+    usb_serial_jtag_write_bytes(&c, 1, portMAX_DELAY);
+#else
     uart_write_bytes(UART_CLI_PORT, &c, 1);
+#endif
 }
 
 /**
@@ -480,6 +494,18 @@ static void uart_cli_task(void *arg)
     (void)arg;
 
     uint8_t rx_chunk[UART_CLI_RX_CHUNK_SIZE];
+
+#if UART_CLI_USE_USB_SERIAL_JTAG
+    while (true) {
+        const int bytes_read = usb_serial_jtag_read_bytes(rx_chunk, sizeof(rx_chunk), pdMS_TO_TICKS(10));
+        if (bytes_read > 0) {
+            for (int i = 0; i < bytes_read; i++) {
+                embeddedCliReceiveChar(cli, static_cast<char>(rx_chunk[i]));
+            }
+            embeddedCliProcess(cli);
+        }
+    }
+#else
     uart_event_t event;
 
     while (true) {
@@ -507,11 +533,19 @@ static void uart_cli_task(void *arg)
             break;
         }
     }
+#endif
 }
 
 /** @copydoc uart_cli_start */
 void uart_cli_start(void)
 {
+#if UART_CLI_USE_USB_SERIAL_JTAG
+    usb_serial_jtag_driver_config_t usb_serial_jtag_config = {
+        .tx_buffer_size = 256,
+        .rx_buffer_size = 256,
+    };
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_serial_jtag_config));
+#else
     const uart_config_t uart_config = {
         .baud_rate = UART_CLI_BAUD_RATE,
         .data_bits = UART_DATA_8_BITS,
@@ -532,6 +566,7 @@ void uart_cli_start(void)
     ESP_ERROR_CHECK(uart_param_config(UART_CLI_PORT, &uart_config));
     ESP_ERROR_CHECK(
         uart_set_pin(UART_CLI_PORT, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+#endif
 
     cli = embeddedCliNewDefault();
 

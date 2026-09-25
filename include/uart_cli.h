@@ -4,9 +4,11 @@ namespace llbeacon {
 namespace uart_cli {
 
 /**
- * @brief UART0(console/USBシリアルと共用)を割り込み駆動のRX処理付きで初期化し、
- *        ドライバのイベントキューから受信バイトを取り出してembedded-cliに
- *        渡すFreeRTOSタスクを起動する
+ * @brief CLI の入出力を初期化し、受信バイトを embedded-cli に渡す FreeRTOS タスクを起動する
+ *
+ * 入出力先はボード定義で切り替わる:
+ *   - Atom Lite (ESP32): UART0
+ *   - AtomS3 Lite (ESP32-S3): USB Serial JTAG
  *
  * 対応コマンド:
  *   - `led set <pattern> <rgb1> <rgb2> <period_ms>` : 光らせ方を一括設定

@@ -33,8 +33,13 @@ LED 制御本体の設計は [led-control-design.md](led-control-design.md) を�
 
 ## 2. `uart_cli` モジュール
 
-既存の UART 受信処理（割り込み駆動イベントキュー -> embedded-cli）は流用し、
-`led` binding を以下のサブコマンドに置き換えます。
+入出力トランスポートはボード定義で切り替え、受信バイトを embedded-cli へ渡す
+FreeRTOS タスクを共通化します。
+
+- Atom Lite (ESP32): UART0 の割り込み駆動イベントキュー
+- AtomS3 Lite (ESP32-S3): USB Serial JTAG のポーリング読み出し
+
+`led` binding は以下のサブコマンドに置き換えます。
 
 ### 2.1 コマンド解析
 

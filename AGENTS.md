@@ -79,10 +79,10 @@ this repository, and cite the issue number when a change implements one.
     applies dimmer mode transitions.
   - `src/button.cpp` / `include/button.h` — GPIO ISR plus a FreeRTOS task that
     classifies short/long presses and forwards them to `led_control`.
-  - `src/uart_cli.cpp` / `include/uart_cli.h` — reads UART0 through the ESP-IDF
-    driver's interrupt-driven event queue and feeds an `embedded-cli` instance in
-    a dedicated FreeRTOS task; supports the `led set|max|dim|time|mode|status`
-    subcommands.
+  - `src/uart_cli.cpp` / `include/uart_cli.h` — feeds an `embedded-cli` instance
+    in a dedicated FreeRTOS task. Input/output transport is board-selected:
+    UART0 on Atom Lite, USB Serial JTAG on AtomS3 Lite. Supports the
+    `led set|max|dim|time|mode|status` subcommands.
 - `sdkconfig.defaults` disables peripherals the project does not use
   (`CONFIG_ETH_USE_SPI_ETHERNET`, `CONFIG_ETH_USE_ESP32_EMAC`, `CONFIG_BT_ENABLED`)
   while keeping the USB/UART console, GPIO, and LED support. Enable a new
