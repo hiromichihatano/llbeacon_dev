@@ -108,17 +108,20 @@ static void uart_cli_task(void *arg)
 /** @copydoc uart_cli_start */
 void uart_cli_start(void)
 {
-    uart_config_t uart_config = {};
-    uart_config.baud_rate = UART_CLI_BAUD_RATE;
-    uart_config.data_bits = UART_DATA_8_BITS;
-    uart_config.parity = UART_PARITY_DISABLE;
-    uart_config.stop_bits = UART_STOP_BITS_1;
-    uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-    uart_config.rx_flow_ctrl_thresh = 0;
-    uart_config.rx_glitch_filt_thresh = 0;
-    uart_config.source_clk = UART_SCLK_DEFAULT;
-    uart_config.flags.allow_pd = 0;
-    uart_config.flags.backup_before_sleep = 0;
+    const uart_config_t uart_config = {
+        .baud_rate = UART_CLI_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .rx_flow_ctrl_thresh = 0,
+        .rx_glitch_filt_thresh = 0,
+        .source_clk = UART_SCLK_DEFAULT,
+        .flags = {
+            .allow_pd = 0,
+            .backup_before_sleep = 0,
+        },
+    };
 
     ESP_ERROR_CHECK(uart_driver_install(UART_CLI_PORT, UART_CLI_RX_BUFFER_SIZE, UART_CLI_TX_BUFFER_SIZE,
                                         UART_CLI_EVENT_QUEUE_SIZE, &uart_event_queue, 0));
@@ -128,12 +131,13 @@ void uart_cli_start(void)
 
     cli = embeddedCliNewDefault();
 
-    CliCommandBinding led_binding = {};
-    led_binding.name = "led";
-    led_binding.help = "Usage: led <0|1> - disable/enable LED blinking";
-    led_binding.tokenizeArgs = true;
-    led_binding.context = nullptr;
-    led_binding.binding = led_command_binding;
+    CliCommandBinding led_binding = {
+        .name = "led",
+        .help = "Usage: led <0|1> - disable/enable LED blinking",
+        .tokenizeArgs = true,
+        .context = nullptr,
+        .binding = led_command_binding,
+    };
     embeddedCliAddBinding(cli, led_binding);
 
     cli->writeChar = cli_write_char;
