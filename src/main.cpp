@@ -1,13 +1,15 @@
-#include "led_blink.h"
+#include "button.h"
+#include "led_control.h"
 #include "uart_cli.h"
 
 /**
  * @brief アプリケーションのエントリポイント
  *
- * LED点滅タスクとUART CLIタスクを起動する。
+ * LED 制御タスク、ボタン入力タスク、UART CLI タスクを起動する。
  */
 extern "C" void app_main(void)
 {
-    llbeacon::led_blink::led_blink_start();
+    llbeacon::led_control::start();
+    llbeacon::button::start();
     llbeacon::uart_cli::uart_cli_start();
 }

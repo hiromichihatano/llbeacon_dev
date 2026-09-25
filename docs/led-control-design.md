@@ -71,13 +71,13 @@ struct Status {
     Mode mode;
     uint8_t max_brightness;       // 0-255, default 128
     uint8_t dimmer_active;        // 0-100, default 100
-    uint8_t dimmer_dimmer1;       // 0-100, default 80
-    uint8_t dimmer_dimmer2;       // 0-100, default 30
+    uint8_t dimmer_dimmer1;       // 0-100, default 30
+    uint8_t dimmer_dimmer2;       // 0-100, default 10
     uint32_t time_dimmer1_s;      // default 10
     uint32_t time_dimmer2_s;      // default 180
     uint32_t time_notification_s; // default 5
     Pattern pattern;              // default PULSE
-    uint32_t rgb1;                // 0xRRGGBB, default 0xFFFFFF
+    uint32_t rgb1;                // 0xRRGGBB, default 0xFF0000
     uint32_t rgb2;                // 0xRRGGBB, default 0x000000
     uint32_t period_ms;           // default 1000
 };
@@ -213,7 +213,7 @@ extern "C" void app_main(void)
 ```
 
 起動直後は `led_control` のデフォルト値（モード = active、パターン = PULSE、
-RGB1 = `FFFFFF`、RGB2 = `000000`、周期 = 1000ms）で点灯を開始します。
+RGB1 = `FF0000`、RGB2 = `000000`、周期 = 1000ms）で点灯を開始します。
 
 ## 7. 検証
 

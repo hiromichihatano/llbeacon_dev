@@ -72,13 +72,17 @@ this repository, and cite the issue number when a change implements one.
 - ESP-IDF starts the firmware at `app_main()` in `src/main.cpp`. Keep the
   ESP-IDF application model (not a hosted `main()`) and keep it declared
   `extern "C"`, since ESP-IDF calls it with C linkage.
-- Existing modules, both wrapped in the `llbeacon` namespace — follow that for
+- Existing modules, all wrapped in the `llbeacon` namespace — follow that for
   new modules:
-  - `src/led_blink.cpp` / `include/led_blink.h` — FreeRTOS task, exposes
-    `led_blink_start()` and `led_blink_set_enabled()`.
+  - `src/led_control.cpp` / `include/led_control.h` — owns the `led_strip`
+    handle and a 10 ms FreeRTOS task that renders the current pattern and
+    applies dimmer mode transitions.
+  - `src/button.cpp` / `include/button.h` — GPIO ISR plus a FreeRTOS task that
+    classifies short/long presses and forwards them to `led_control`.
   - `src/uart_cli.cpp` / `include/uart_cli.h` — reads UART0 through the ESP-IDF
     driver's interrupt-driven event queue and feeds an `embedded-cli` instance in
-    a dedicated FreeRTOS task; supports `led 0` / `led 1`.
+    a dedicated FreeRTOS task; supports the `led set|max|dim|time|mode|status`
+    subcommands.
 - `sdkconfig.defaults` disables peripherals the project does not use
   (`CONFIG_ETH_USE_SPI_ETHERNET`, `CONFIG_ETH_USE_ESP32_EMAC`, `CONFIG_BT_ENABLED`)
   while keeping the USB/UART console, GPIO, and LED support. Enable a new
@@ -112,8 +116,8 @@ this repository, and cite the issue number when a change implements one.
   `led_strip_config_t`, ...) with a single C++20 designated-initializer literal
   (`const T value = { .field = ..., .nested = {.field = ...} };`) instead of
   declaring `T value = {};` and assigning fields afterwards. Prefer `const` for
-  structs that are not mutated after initialization. See `src/led_blink.cpp` and
-  `src/uart_cli.cpp`.
+  structs that are not mutated after initialization. See `src/led_control.cpp`,
+  `src/button.cpp`, and `src/uart_cli.cpp`.
 
 ## Finding third-party headers
 

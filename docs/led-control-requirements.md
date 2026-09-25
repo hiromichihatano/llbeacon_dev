@@ -33,7 +33,7 @@ UI（button / uart_cli）の設計は [led-control-ui.md](led-control-ui.md) を
 | --- | --- | --- |
 | `led set <pattern> <rgb1> <rgb2> <period_ms>` | 光らせ方を一括設定し **active へ遷移** | pattern: `pulse` / `flash` / `saw` / `sine`、rgb1 / rgb2: `RRGGBB`、period: 100-60000ms（default 1000） |
 | `led max <0-255>` | 最大輝度を設定 | 0-255、default 128 |
-| `led dim <active\|dimmer1\|dimmer2> <0-100>` | dimmer 輝度%を設定 | 0-100、default active 100 / dimmer1 80 / dimmer2 30 |
+| `led dim <active\|dimmer1\|dimmer2> <0-100>` | dimmer 輝度%を設定 | 0-100、default active 100 / dimmer1 30 / dimmer2 10 |
 | `led time <dimmer1\|dimmer2\|notification> <秒>` | dimmer 時間を設定 | 1-86400、default dimmer1 10 / dimmer2 180 / notification 5 |
 | `led mode <active\|dimmer1\|dimmer2\|sleep\|notification>` | 強制モード遷移 | 全 5 モード指定可、遷移先のタイマーを開始 |
 | `led status [--json]` | 現在の設定を表示 | `--json` で JSON 1 行出力 |
@@ -59,14 +59,14 @@ led status --json
 | --- | --- | --- | --- |
 | 最大輝度 | 0-255 | **128** | SK6812 の連続点灯を考慮した保守値（約 50%） |
 | dimmer 輝度 active | 0-100% | 100% | |
-| dimmer 輝度 dimmer1 | 0-100% | 80% | |
-| dimmer 輝度 dimmer2 | 0-100% | 30% | |
+| dimmer 輝度 dimmer1 | 0-100% | 30% | |
+| dimmer 輝度 dimmer2 | 0-100% | 10% | |
 | dimmer 輝度 sleep | - | **0%（固定）** | 設定不可 |
 | dimmer 時間 dimmer1 | 1-86400 秒 | 10 秒 | |
 | dimmer 時間 dimmer2 | 1-86400 秒 | 180 秒 | |
 | dimmer 時間 notification | 1-86400 秒 | 5 秒 | |
 | パターン | PULSE / FLASH / SAW / SINE | PULSE | |
-| RGB1 | `RRGGBB` | `FFFFFF` | |
+| RGB1 | `RRGGBB` | `FF0000` | |
 | RGB2 | `RRGGBB` | `000000` | |
 | 周期 | 100-60000ms | 1000ms | |
 | 起動時モード | - | active | 電源投入直後 |
@@ -94,8 +94,8 @@ blend後チャンネル = RGB1チャンネル * coef + RGB2チャンネル * (1.
 | モード | 使用する dimmer 輝度% |
 | --- | --- |
 | active | active 設定値（default 100%） |
-| dimmer1 | dimmer1 設定値（default 80%） |
-| dimmer2 | dimmer2 設定値（default 30%） |
+| dimmer1 | dimmer1 設定値（default 30%） |
+| dimmer2 | dimmer2 設定値（default 10%） |
 | notification | **active 設定値**（確定事項） |
 | sleep | 0%（消灯） |
 

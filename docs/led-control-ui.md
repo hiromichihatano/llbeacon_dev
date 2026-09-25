@@ -63,10 +63,10 @@ LED 制御本体の設計は [led-control-design.md](led-control-design.md) を�
 {
   "mode": "active",
   "max_brightness": 128,
-  "dimmer": {"active": 100, "dimmer1": 80, "dimmer2": 30, "sleep": 0},
+  "dimmer": {"active": 100, "dimmer1": 30, "dimmer2": 10, "sleep": 0},
   "time": {"dimmer1_s": 10, "dimmer2_s": 180, "notification_s": 5},
   "pattern": "PULSE",
-  "rgb1": "FFFFFF",
+  "rgb1": "FF0000",
   "rgb2": "000000",
   "period_ms": 1000
 }

@@ -18,9 +18,12 @@ GPIO 番号を直接使用せず、このヘッダのシンボル名を使用し
 
 現在のファームウェアは、Espressif 公式の
 [`espressif/led_strip`](https://components.espressif.com/components/espressif/led_strip)
-コンポーネントを使用し、内蔵 RGB LED を赤色で 500 ms 間隔に点滅させる FreeRTOS
-タスクを起動します（[`src/led_blink.cpp`](src/led_blink.cpp) /
-[`include/led_blink.h`](include/led_blink.h)）。
+コンポーネントを使用し、内蔵 RGB LED をパターン（PULSE / FLASH / SAW / SINE）で
+点灯させます。10 ms 周期の FreeRTOS タスクがパターン描画と dimmer モード遷移を
+行います（[`src/led_control.cpp`](src/led_control.cpp) /
+[`include/led_control.h`](include/led_control.h)）。ボタンの短押 / 長押は
+[`src/button.cpp`](src/button.cpp) / [`include/button.h`](include/button.h) で
+判定し、dimmer モード遷移に反映します。
 
 また、コンソールと共用の UART0 上で [olmanqj/embedded-cli] ライブラリを使った
 簡易 CLI を提供しています（[`src/uart_cli.cpp`](src/uart_cli.cpp) /
@@ -28,8 +31,16 @@ GPIO 番号を直接使用せず、このヘッダのシンボル名を使用し
 割り込み駆動イベントキューで処理し、専用 FreeRTOS タスクがキューから受信データを
 取り出して CLI に渡します。以下のコマンドに対応しています。
 
-- `led 0` — LED 点滅を無効化（消灯）
-- `led 1` — LED 点滅を有効化
+- `led set <pulse|flash|saw|sine> <RRGGBB> <RRGGBB> <100-60000>` — 光らせ方を一括設定
+- `led max <0-255>` — 最大輝度を設定
+- `led dim <active|dimmer1|dimmer2> <0-100>` — dimmer 輝度%を設定
+- `led time <dimmer1|dimmer2|notification> <1-86400>` — dimmer 時間を設定
+- `led mode <active|dimmer1|dimmer2|sleep|notification>` — 強制モード遷移
+- `led status [--json]` — 現在の設定を表示
+
+仕様の詳細は [`docs/led-control-requirements.md`](docs/led-control-requirements.md)、
+設計は [`docs/led-control-design.md`](docs/led-control-design.md) と
+[`docs/led-control-ui.md`](docs/led-control-ui.md) を参照してください。
 
 [olmanqj/embedded-cli]: https://registry.platformio.org/libraries/olmanqj/embedded-cli
 
