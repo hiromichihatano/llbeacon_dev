@@ -2,7 +2,6 @@
 
 #include <cassert>
 
-#include "audio_tone.h"
 #include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_err.h"
@@ -74,7 +73,6 @@ static void button_task(void *arg)
                     const uint32_t held_ms = pdTICKS_TO_MS(xTaskGetTickCount() - pressed_at);
                     if (held_ms >= BUTTON_DEBOUNCE_MS && held_ms < BUTTON_LONG_PRESS_MS) {
                         llbeacon::led_control::handle_button(Event::SHORT_PRESS);
-                        llbeacon::audio_tone::play_sample();
                     }
                     break;
                 }

@@ -18,6 +18,7 @@
 #define UART_CLI_USE_USB_SERIAL_JTAG 0
 #endif
 
+#include "audio_tone.h"
 #include "embedded_cli.h"
 #include "led_control.h"
 
@@ -32,6 +33,15 @@ namespace uart_cli {
 #define UART_CLI_TASK_STACK_SIZE 4096
 #define UART_CLI_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define UART_CLI_RX_CHUNK_SIZE 64
+
+#define SOUND_FREQ_MIN_HZ 20
+#define SOUND_FREQ_MAX_HZ 8000
+#define SOUND_DURATION_MIN_MS 10
+#define SOUND_DURATION_MAX_MS 5000
+#define SOUND_COUNT_MIN 1
+#define SOUND_COUNT_MAX 100
+#define SOUND_VOLUME_MIN 0
+#define SOUND_VOLUME_MAX 100
 
 #if !UART_CLI_USE_USB_SERIAL_JTAG
 static QueueHandle_t uart_event_queue;
@@ -143,6 +153,33 @@ static bool parse_pattern(const char *token, llbeacon::led_control::Pattern *out
     }
     if (std::strcmp(token, "sine") == 0) {
         *out = llbeacon::led_control::Pattern::SINE;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief 波形名文字列をパースする
+ *
+ * @param token 波形名(sine / square / saw)
+ * @param out   パース結果の格納先
+ * @return 成功なら true
+ */
+static bool parse_waveform(const char *token, llbeacon::audio_tone::Waveform *out)
+{
+    if (token == nullptr) {
+        return false;
+    }
+    if (std::strcmp(token, "sine") == 0) {
+        *out = llbeacon::audio_tone::Waveform::SINE;
+        return true;
+    }
+    if (std::strcmp(token, "square") == 0) {
+        *out = llbeacon::audio_tone::Waveform::SQUARE;
+        return true;
+    }
+    if (std::strcmp(token, "saw") == 0) {
+        *out = llbeacon::audio_tone::Waveform::SAW;
         return true;
     }
     return false;
@@ -353,6 +390,187 @@ static void print_status_json(EmbeddedCli *embedded_cli, const llbeacon::led_con
                   pattern_name(status.pattern), static_cast<unsigned long>(status.rgb1),
                   static_cast<unsigned long>(status.rgb2), static_cast<unsigned long>(status.period_ms));
     embeddedCliPrint(embedded_cli, buf);
+}
+
+/**
+ * @brief "sound" コマンドのヘルプ文字列を出力する
+ *
+ * @param embedded_cli 出力先のCLIインスタンス
+ */
+static void print_sound_help(EmbeddedCli *embedded_cli)
+{
+    embeddedCliPrint(embedded_cli,
+                     "Usage:\r\n"
+                     "  sound beep <sine|square|saw> <20-8000> <10-5000> <1-100> <0-100>\r\n"
+                     "  sound volume master <0-100>\r\n"
+                     "  sound status [--json]\r\n"
+                     "  sound stop");
+}
+
+/**
+ * @brief "sound status" を human-readable 形式で出力する
+ *
+ * @param embedded_cli 出力先のCLIインスタンス
+ * @param status       現在状態のスナップショット
+ */
+static void print_sound_status_text(EmbeddedCli *embedded_cli, const llbeacon::audio_tone::Status &status)
+{
+    if (!status.supported) {
+        embeddedCliPrint(embedded_cli, "supported: false");
+        return;
+    }
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "supported: true\r\n"
+                  "playing: %s\r\n"
+                  "master_volume: %u\r\n"
+                  "beep_volume: %u\r\n"
+                  "waveform: %s\r\n"
+                  "frequency_hz: %lu\r\n"
+                  "duration_ms: %lu\r\n"
+                  "count: %lu",
+                  status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
+                  static_cast<unsigned>(status.beep_volume),
+                  llbeacon::audio_tone::waveform_name(status.waveform),
+                  static_cast<unsigned long>(status.frequency_hz),
+                  static_cast<unsigned long>(status.duration_ms), static_cast<unsigned long>(status.count));
+    embeddedCliPrint(embedded_cli, buf);
+}
+
+/**
+ * @brief "sound status --json" を JSON 形式で出力する
+ *
+ * @param embedded_cli 出力先のCLIインスタンス
+ * @param status       現在状態のスナップショット
+ */
+static void print_sound_status_json(EmbeddedCli *embedded_cli, const llbeacon::audio_tone::Status &status)
+{
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"supported\":%s,\"playing\":%s,\"master_volume\":%u,\"beep_volume\":%u,"
+                  "\"waveform\":\"%s\",\"frequency_hz\":%lu,\"duration_ms\":%lu,\"count\":%lu}",
+                  status.supported ? "true" : "false", status.playing ? "true" : "false",
+                  static_cast<unsigned>(status.master_volume), static_cast<unsigned>(status.beep_volume),
+                  llbeacon::audio_tone::waveform_name(status.waveform),
+                  static_cast<unsigned long>(status.frequency_hz),
+                  static_cast<unsigned long>(status.duration_ms), static_cast<unsigned long>(status.count));
+    embeddedCliPrint(embedded_cli, buf);
+}
+
+/**
+ * @brief "sound" コマンドのバインディング関数
+ *
+ * サブコマンドを解釈して audio_tone へ再生要求や設定を行う。
+ *
+ * @param embedded_cli 呼び出し元のCLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ * @param context      未使用のコンテキストポインタ
+ */
+static void sound_command_binding(EmbeddedCli *embedded_cli, char *args, void *context)
+{
+    (void)context;
+
+    // token 1 がサブコマンド名（token 0 は "sound" 本体）。
+    const char *sub = embeddedCliGetToken(args, 1);
+    if (sub == nullptr) {
+        print_sound_help(embedded_cli);
+        return;
+    }
+
+    if (std::strcmp(sub, "beep") == 0) {
+        // 全引数をトークンで取り出し、1つずつ範囲チェック付きでパースする。
+        const char *waveform_token = embeddedCliGetToken(args, 2);
+        const char *freq_token = embeddedCliGetToken(args, 3);
+        const char *duration_token = embeddedCliGetToken(args, 4);
+        const char *count_token = embeddedCliGetToken(args, 5);
+        const char *volume_token = embeddedCliGetToken(args, 6);
+
+        llbeacon::audio_tone::Waveform waveform;
+        uint32_t freq_hz = 0;
+        uint32_t duration_ms = 0;
+        uint32_t count = 0;
+        uint32_t volume = 0;
+
+        if (waveform_token == nullptr || freq_token == nullptr || duration_token == nullptr ||
+            count_token == nullptr || volume_token == nullptr || !parse_waveform(waveform_token, &waveform) ||
+            !parse_u32(freq_token, SOUND_FREQ_MIN_HZ, SOUND_FREQ_MAX_HZ, &freq_hz) ||
+            !parse_u32(duration_token, SOUND_DURATION_MIN_MS, SOUND_DURATION_MAX_MS, &duration_ms) ||
+            !parse_u32(count_token, SOUND_COUNT_MIN, SOUND_COUNT_MAX, &count) ||
+            !parse_u32(volume_token, SOUND_VOLUME_MIN, SOUND_VOLUME_MAX, &volume)) {
+            embeddedCliPrint(embedded_cli,
+                             "ERR: usage: sound beep <sine|square|saw> <20-8000> <10-5000> <1-100> <0-100>");
+            return;
+        }
+
+        // audio_tone へ再生要求を投げる。再生は非同期で始まる。
+        const llbeacon::audio_tone::BeepConfig config = {
+            .waveform = waveform,
+            .frequency_hz = freq_hz,
+            .duration_ms = duration_ms,
+            .count = count,
+            .volume = static_cast<uint8_t>(volume),
+        };
+        if (!llbeacon::audio_tone::beep(config)) {
+            embeddedCliPrint(embedded_cli, "ERR: sound is busy or not supported");
+            return;
+        }
+        embeddedCliPrint(embedded_cli, "OK");
+        return;
+    }
+
+    if (std::strcmp(sub, "volume") == 0) {
+        // master volume は永続設定なので、非対応ボードでは意味を持たない。
+        if (!llbeacon::audio_tone::is_supported()) {
+            embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+            return;
+        }
+
+        const char *target_token = embeddedCliGetToken(args, 2);
+        const char *value_token = embeddedCliGetToken(args, 3);
+        uint32_t value = 0;
+
+        if (target_token == nullptr || value_token == nullptr ||
+            std::strcmp(target_token, "master") != 0 ||
+            !parse_u32(value_token, SOUND_VOLUME_MIN, SOUND_VOLUME_MAX, &value)) {
+            embeddedCliPrint(embedded_cli, "ERR: usage: sound volume master <0-100>");
+            return;
+        }
+
+        llbeacon::audio_tone::set_master_volume(static_cast<uint8_t>(value));
+        embeddedCliPrint(embedded_cli, "OK");
+        return;
+    }
+
+    if (std::strcmp(sub, "stop") == 0) {
+        // stop も audio_tone の状態を変えるので、非対応ボードではエラーにする。
+        if (!llbeacon::audio_tone::is_supported()) {
+            embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+            return;
+        }
+        llbeacon::audio_tone::stop();
+        embeddedCliPrint(embedded_cli, "OK");
+        return;
+    }
+
+    if (std::strcmp(sub, "status") == 0) {
+        // --json が付いていれば JSON、無ければ人間向けテキストで出力する。
+        const char *option = embeddedCliGetToken(args, 2);
+        if (option != nullptr && std::strcmp(option, "--json") != 0) {
+            embeddedCliPrint(embedded_cli, "ERR: usage: sound status [--json]");
+            return;
+        }
+
+        const llbeacon::audio_tone::Status status = llbeacon::audio_tone::get_status();
+        if (option != nullptr) {
+            print_sound_status_json(embedded_cli, status);
+        } else {
+            print_sound_status_text(embedded_cli, status);
+        }
+        return;
+    }
+
+    print_sound_help(embedded_cli);
 }
 
 /**
@@ -578,6 +796,15 @@ void uart_cli_start(void)
         .binding = led_command_binding,
     };
     embeddedCliAddBinding(cli, led_binding);
+
+    CliCommandBinding sound_binding = {
+        .name = "sound",
+        .help = "sound <beep|volume|status|stop> ...",
+        .tokenizeArgs = true,
+        .context = nullptr,
+        .binding = sound_command_binding,
+    };
+    embeddedCliAddBinding(cli, sound_binding);
 
     cli->writeChar = cli_write_char;
 

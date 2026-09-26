@@ -79,14 +79,15 @@ this repository, and cite the issue number when a change implements one.
     applies dimmer mode transitions.
   - `src/audio_tone.cpp` / `include/audio_tone.h` — initializes the ES8311
     codec (via `esp_codec_dev`) and I2S on AtomS3 Lite + Atomic Voice Base, and
-    plays a short sample sine wave. No-op on other boards.
+    plays requested beeps (waveform / frequency / duration / count / volume) in
+    a dedicated task. No-op on other boards.
   - `src/button.cpp` / `include/button.h` — GPIO ISR plus a FreeRTOS task that
-    classifies short/long presses and forwards them to `led_control` and
-    `audio_tone`.
+    classifies short/long presses and forwards them to `led_control`.
   - `src/uart_cli.cpp` / `include/uart_cli.h` — feeds an `embedded-cli` instance
     in a dedicated FreeRTOS task. Input/output transport is board-selected:
     UART0 on Atom Lite, USB Serial JTAG on AtomS3 Lite. Supports the
-    `led set|max|dim|time|mode|status` subcommands.
+    `led set|max|dim|time|mode|status` and
+    `sound beep|volume|status|stop` subcommands.
 - `sdkconfig.defaults` disables peripherals the project does not use
   (`CONFIG_ETH_USE_SPI_ETHERNET`, `CONFIG_ETH_USE_ESP32_EMAC`, `CONFIG_BT_ENABLED`)
   while keeping the USB/UART console, GPIO, LED, and I2S audio
