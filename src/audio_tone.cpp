@@ -44,14 +44,13 @@ const char *waveform_name(Waveform waveform)
 #define AUDIO_TONE_DEFAULT_MASTER_VOLUME 60
 #define AUDIO_TONE_CODEC_VOLUME 60
 #define AUDIO_TONE_CHUNK_FRAMES 512
-#define AUDIO_TONE_REPEAT_GAP_MS 50
 
 #define AUDIO_TONE_I2C_PORT I2C_NUM_0
 #define AUDIO_TONE_I2C_FREQ_HZ 100000
 #define AUDIO_TONE_ES8311_ADDR ES8311_CODEC_DEFAULT_ADDR
 #define AUDIO_TONE_PI4IOE_ADDR 0x43
 
-#define AUDIO_TONE_BEEP_QUEUE_LENGTH 1
+#define AUDIO_TONE_QUEUE_LENGTH 1
 #define AUDIO_TONE_TASK_STACK_SIZE 4096
 #define AUDIO_TONE_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
 
@@ -65,18 +64,16 @@ static i2s_chan_handle_t i2s_tx_handle;
 static esp_codec_dev_handle_t codec_dev;
 static bool audio_ready = false;
 
-static QueueHandle_t beep_queue;
-static TaskHandle_t beep_task_handle;
+static QueueHandle_t tone_queue;
+static TaskHandle_t tone_task_handle;
 static std::atomic<bool> playing{false};
 static std::atomic<bool> stop_requested{false};
 static std::atomic<uint32_t> master_volume{AUDIO_TONE_DEFAULT_MASTER_VOLUME};
 
-static BeepConfig last_config = {
+static ToneConfig last_config = {
     .waveform = Waveform::SINE,
-    .frequency_hz = 880,
-    .duration_ms = 200,
-    .count = 1,
-    .volume = 100,
+    .note_count = 1,
+    .notes = {Note{880, 200, 80}},
 };
 
 /**
@@ -195,10 +192,10 @@ static bool write_silence(uint32_t frames)
 }
 
 /**
- * @brief beep 再生専用タスク本体
+ * @brief tone シーケンス再生専用タスク本体
  *
- * キュー経由で受け取った BeepConfig を再生する。STOP 要求は
- * stop_requested フラグで受け取り、チャンク境界で停止する。
+ * キュー経由で受け取った ToneConfig を先頭の note から順に再生する。
+ * STOP 要求は stop_requested フラグで受け取り、note 間・チャンク境界で停止する。
  *
  * @param arg 未使用
  */
@@ -208,48 +205,52 @@ static void audio_tone_task(void *arg)
 
     // 波形バッファはタスクスタックに置くと大きいため static にする。
     static int16_t chunk[AUDIO_TONE_CHUNK_FRAMES * AUDIO_TONE_CHANNELS];
-    BeepConfig config;
+    ToneConfig config;
 
     while (true) {
-        // 1件の beep 要求を受け取るまで待機する。
-        if (xQueueReceive(beep_queue, &config, portMAX_DELAY) != pdTRUE) {
+        // 1件の tone 要求を受け取るまで待機する。
+        if (xQueueReceive(tone_queue, &config, portMAX_DELAY) != pdTRUE) {
             continue;
         }
 
-        // 再生中フラグを立てて、次の beep() 要求を拒否させる。
+        // 再生中フラグを立てて、次の tone() 要求を拒否させる。
         playing.store(true);
 
-        // 最終音量 = master volume x beep volume を線形ゲインとして計算し、
-        // 波形ごとの補正係数を掛けて PCM 振幅を決める。
-        const float gain = (static_cast<float>(master_volume.load()) / 100.0f) *
-                           (static_cast<float>(config.volume) / 100.0f);
-        const int16_t amplitude = static_cast<int16_t>(
-            AUDIO_TONE_BASE_AMPLITUDE * gain * waveform_scale(config.waveform));
-
-        // 1サンプルごとに進める位相と、beep 1回分・繰り返し間の無音のフレーム数。
-        // PolyBLEP 用に、位相増分を 1周期=1.0 表記へ変換しておく。
-        const float phase_step = k2Pi * config.frequency_hz / AUDIO_TONE_SAMPLE_RATE;
-        const float blep_dt = phase_step / k2Pi;
-        const uint32_t tone_frames = AUDIO_TONE_SAMPLE_RATE * config.duration_ms / 1000;
-        const uint32_t gap_frames = AUDIO_TONE_SAMPLE_RATE * AUDIO_TONE_REPEAT_GAP_MS / 1000;
-
         bool write_failed = false;
+        float phase = 0.0f;
 
-        // 指定回数分の beep を繰り返す。stop 要求が来たらループを抜ける。
-        for (uint32_t repeat = 0; repeat < config.count && !stop_requested.load(); repeat++) {
-            // 2回目以降は、beep 同士がつながらないよう短い無音を挟む。
-            if (repeat > 0 && gap_frames > 0 && !write_silence(gap_frames)) {
-                write_failed = true;
-                break;
+        // シーケンスを先頭から順に再生する。stop 要求が来たらループを抜ける。
+        for (uint32_t note_index = 0; note_index < config.note_count && !stop_requested.load();
+             note_index++) {
+            const Note &note = config.notes[note_index];
+            const uint32_t note_frames = AUDIO_TONE_SAMPLE_RATE * note.duration_ms / 1000;
+
+            if (note.frequency_hz == 0) {
+                // 無音 note はサイレンスを書き、次の音のために位相をリセットする。
+                if (!write_silence(note_frames)) {
+                    write_failed = true;
+                    break;
+                }
+                phase = 0.0f;
+                continue;
             }
 
-            // 1回の beep を生成する。phase はチャンクをまたいで引き継ぎ、
-            // 途中でリセットしない（つなぎ目の不連続を防ぐ）。
-            float phase = 0.0f;
+            // 最終音量 = master volume x note volume を線形ゲインとして計算し、
+            // 波形ごとの補正係数を掛けて PCM 振幅を決める。
+            const float gain = (static_cast<float>(master_volume.load()) / 100.0f) *
+                               (static_cast<float>(note.volume) / 100.0f);
+            const int16_t amplitude = static_cast<int16_t>(
+                AUDIO_TONE_BASE_AMPLITUDE * gain * waveform_scale(config.waveform));
+
+            // 1サンプルごとに進める位相。PolyBLEP 用に 1周期=1.0 表記も用意する。
+            const float phase_step = k2Pi * note.frequency_hz / AUDIO_TONE_SAMPLE_RATE;
+            const float blep_dt = phase_step / k2Pi;
+
+            // phase は非無音 note 間で引き継ぎ、note 境界の不連続を避ける。
             uint32_t frame = 0;
-            while (frame < tone_frames && !stop_requested.load()) {
+            while (frame < note_frames && !stop_requested.load()) {
                 // 残りフレームをチャンク単位に分割して書き込む。
-                uint32_t frames = tone_frames - frame;
+                uint32_t frames = note_frames - frame;
                 if (frames > AUDIO_TONE_CHUNK_FRAMES) {
                     frames = AUDIO_TONE_CHUNK_FRAMES;
                 }
@@ -283,7 +284,7 @@ static void audio_tone_task(void *arg)
         // DMA に残った音を落ち着かせるため、短い無音を流す。
         write_silence(AUDIO_TONE_CHUNK_FRAMES);
 
-        // 再生完了（または停止）。次の beep を受け付けられる状態へ戻す。
+        // 再生完了（または停止）。次の tone を受け付けられる状態へ戻す。
         stop_requested.store(false);
         playing.store(false);
     }
@@ -495,19 +496,19 @@ void start(void)
         return;
     }
 
-    // beep 要求を再生タスクへ渡すキュー。同時再生は 1 件だけなので長さ 1。
-    beep_queue = xQueueCreate(AUDIO_TONE_BEEP_QUEUE_LENGTH, sizeof(BeepConfig));
-    if (beep_queue == nullptr) {
-        ESP_LOGE(TAG, "failed to create beep queue");
+    // tone 要求を再生タスクへ渡すキュー。同時再生は 1 件だけなので長さ 1。
+    tone_queue = xQueueCreate(AUDIO_TONE_QUEUE_LENGTH, sizeof(ToneConfig));
+    if (tone_queue == nullptr) {
+        ESP_LOGE(TAG, "failed to create tone queue");
         return;
     }
 
     // CLI タスクをブロックしないよう、再生は専用タスクで行う。
     if (xTaskCreate(audio_tone_task, "audio_tone", AUDIO_TONE_TASK_STACK_SIZE, nullptr,
-                    AUDIO_TONE_TASK_PRIORITY, &beep_task_handle) != pdPASS) {
+                    AUDIO_TONE_TASK_PRIORITY, &tone_task_handle) != pdPASS) {
         ESP_LOGE(TAG, "failed to create audio_tone task");
-        vQueueDelete(beep_queue);
-        beep_queue = nullptr;
+        vQueueDelete(tone_queue);
+        tone_queue = nullptr;
         return;
     }
 
@@ -515,18 +516,23 @@ void start(void)
     ESP_LOGI(TAG, "audio_tone ready");
 }
 
-/** @copydoc beep */
-bool beep(const BeepConfig &config)
+/** @copydoc tone */
+bool tone(const ToneConfig &config)
 {
     // 初期化済みで、かつ現在再生していない場合だけ要求を受け付ける。
     if (!audio_ready || playing.load()) {
         return false;
     }
 
-    // CLI 以外から直接呼ばれても安全なように、音量だけは範囲を正規化する。
-    BeepConfig clamped = config;
-    if (clamped.volume > 100) {
-        clamped.volume = 100;
+    // CLI 以外から直接呼ばれても安全なように、note 数と音量を正規化する。
+    ToneConfig clamped = config;
+    if (clamped.note_count > kMaxNotes) {
+        clamped.note_count = kMaxNotes;
+    }
+    for (uint32_t i = 0; i < clamped.note_count; i++) {
+        if (clamped.notes[i].volume > 100) {
+            clamped.notes[i].volume = 100;
+        }
     }
 
     // 前回の stop 要求を新しい再生に持ち越さないため、受付時にクリアする。
@@ -534,7 +540,7 @@ bool beep(const BeepConfig &config)
     const bool stop_was_requested = stop_requested.load();
     stop_requested.store(false);
 
-    if (xQueueSend(beep_queue, &clamped, 0) != pdTRUE) {
+    if (xQueueSend(tone_queue, &clamped, 0) != pdTRUE) {
         if (stop_was_requested) {
             stop_requested.store(true);
         }
@@ -569,11 +575,7 @@ Status get_status(void)
         .supported = audio_ready,
         .playing = playing.load(),
         .master_volume = static_cast<uint8_t>(master_volume.load()),
-        .waveform = last_config.waveform,
-        .frequency_hz = last_config.frequency_hz,
-        .duration_ms = last_config.duration_ms,
-        .count = last_config.count,
-        .beep_volume = last_config.volume,
+        .last_tone = last_config,
     };
     return status;
 }
@@ -591,8 +593,8 @@ void start(void)
 {
 }
 
-/** @copydoc beep */
-bool beep(const BeepConfig &config)
+/** @copydoc tone */
+bool tone(const ToneConfig &config)
 {
     (void)config;
     return false;
@@ -616,11 +618,11 @@ Status get_status(void)
         .supported = false,
         .playing = false,
         .master_volume = 0,
-        .waveform = Waveform::SINE,
-        .frequency_hz = 880,
-        .duration_ms = 200,
-        .count = 1,
-        .beep_volume = 100,
+        .last_tone = {
+            .waveform = Waveform::SINE,
+            .note_count = 1,
+            .notes = {Note{880, 200, 80}},
+        },
     };
     return status;
 }

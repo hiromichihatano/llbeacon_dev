@@ -38,15 +38,23 @@ FreeRTOS タスクが受信データを取り出して CLI に渡します。以
 - `led time <dimmer1|dimmer2|notification> <1-86400>` — dimmer 時間を設定
 - `led mode <active|dimmer1|dimmer2|sleep|notification>` — 強制モード遷移
 - `led status [--json]` — 現在の設定を表示
-- `sound beep <sine|square|saw> <20-8000> <10-5000> <1-100> <0-100>` — トーンを再生
+- `tone <sine|square|saw> <freq:duration[:volume]> ...` — シーケンス再生
 - `sound volume master <0-100>` — master volume を設定
 - `sound status [--json]` — 現在の状態を表示
 - `sound stop` — 再生を停止
 
-AtomS3 Lite + Atomic Voice Base (A149) では、`sound beep` コマンドで sine /
+`tone` の note は `周波数:ミリ秒[:音量]` をスペース区切りで並べます。
+周波数 `0` は無音、音量を省略すると `80` になります。
+
+```text
+tone sine 2000:60 1000:80
+tone square 1500:50 0:30 1500:50
+```
+
+AtomS3 Lite + Atomic Voice Base (A149) では、`tone` コマンドで sine /
 square / saw のトーンを再生できます（[`src/audio_tone.cpp`](src/audio_tone.cpp) /
 [`include/audio_tone.h`](include/audio_tone.h)、[esp_codec_dev] 使用）。
-最終音量は master volume と beep 個別音量の積です。
+最終音量は master volume と note 個別音量の積です。
 
 仕様の詳細は [`docs/led-control-requirements.md`](docs/led-control-requirements.md)、
 設計は [`docs/led-control-design.md`](docs/led-control-design.md) と

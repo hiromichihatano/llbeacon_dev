@@ -11,28 +11,36 @@ namespace audio_tone {
 enum class Waveform { SINE, SQUARE, SAW };
 
 /**
- * @brief 1回の beep 再生要求の設定
+ * @brief 1 command で再生できる note の最大数
  */
-struct BeepConfig {
+static constexpr size_t kMaxNotes = 16;
+
+/**
+ * @brief シーケンスを構成する 1 音（または無音）
+ */
+struct Note {
+    uint32_t frequency_hz;  ///< 周波数(Hz)。0 は無音
+    uint32_t duration_ms;   ///< 長さ(ms)
+    uint8_t volume;         ///< 個別音量(0-100)
+};
+
+/**
+ * @brief 1回の tone 再生要求の設定
+ */
+struct ToneConfig {
     Waveform waveform;      ///< 波形
-    uint32_t frequency_hz;  ///< 周波数(Hz)
-    uint32_t duration_ms;   ///< 1回あたりの長さ(ms)
-    uint32_t count;         ///< 繰り返し回数
-    uint8_t volume;         ///< beep 個別音量(0-100)
+    uint32_t note_count;    ///< 有効な note 数(1..kMaxNotes)
+    Note notes[kMaxNotes];  ///< 先頭から順に再生する note
 };
 
 /**
  * @brief 音声再生の現在状態
  */
 struct Status {
-    bool supported;        ///< このボードで音声が使えるか
-    bool playing;          ///< 再生中か
-    uint8_t master_volume; ///< master volume(0-100)
-    Waveform waveform;     ///< 最後に指定された波形
-    uint32_t frequency_hz; ///< 最後に指定された周波数(Hz)
-    uint32_t duration_ms;  ///< 最後に指定された長さ(ms)
-    uint32_t count;        ///< 最後に指定された繰り返し回数
-    uint8_t beep_volume;   ///< 最後に指定された beep 個別音量(0-100)
+    bool supported;          ///< このボードで音声が使えるか
+    bool playing;            ///< 再生中か
+    uint8_t master_volume;   ///< master volume(0-100)
+    ToneConfig last_tone;    ///< 最後に受け付けた tone 設定
 };
 
 /**
@@ -44,18 +52,18 @@ struct Status {
 void start(void);
 
 /**
- * @brief beep を再生要求する
+ * @brief tone シーケンスを再生要求する
  *
  * 再生は専用タスクで非同期に行われる。再生中に呼んだ場合は false を返す。
- * 最終音量は master volume と config.volume の積になる。
+ * 各 note の最終音量は master volume と note.volume の積になる。
  *
  * @param config 再生設定
  * @return 要求を受け付けたなら true
  */
-bool beep(const BeepConfig &config);
+bool tone(const ToneConfig &config);
 
 /**
- * @brief 再生中の beep を停止する
+ * @brief 再生中の tone を停止する
  */
 void stop(void);
 
