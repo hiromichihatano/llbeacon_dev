@@ -38,19 +38,37 @@ FreeRTOS タスクが受信データを取り出して CLI に渡します。以
 - `led time <dimmer1|dimmer2|notification> <1-86400>` — dimmer 時間を設定
 - `led mode <active|dimmer1|dimmer2|sleep|notification>` — 強制モード遷移
 - `led status [--json]` — 現在の設定を表示
+- `tone <sine|square|saw> <freq:duration[:volume]> ...` — シーケンス再生
+- `sound volume master <0-100>` — master volume を設定
+- `sound status [--json]` — 現在の状態を表示
+- `sound stop` — 再生を停止
+
+`tone` の note は `周波数:ミリ秒[:音量]` をスペース区切りで並べます。
+周波数 `0` は無音、音量を省略すると `80` になります。
+
+```text
+tone sine 2000:60 1000:80
+tone square 1500:50 0:30 1500:50
+```
+
+AtomS3 Lite + Atomic Voice Base (A149) では、`tone` コマンドで sine /
+square / saw のトーンを再生できます（[`src/audio_tone.cpp`](src/audio_tone.cpp) /
+[`include/audio_tone.h`](include/audio_tone.h)、[esp_codec_dev] 使用）。
+最終音量は master volume と note 個別音量の積です。
 
 仕様の詳細は [`docs/led-control-requirements.md`](docs/led-control-requirements.md)、
 設計は [`docs/led-control-design.md`](docs/led-control-design.md) と
 [`docs/led-control-ui.md`](docs/led-control-ui.md) を参照してください。
 
 [funbiscuit/embedded-cli]: https://github.com/funbiscuit/embedded-cli
+[esp_codec_dev]: https://components.espressif.com/components/espressif/esp_codec_dev
 
 アプリケーションコードは C++（ESP-IDF の `app_main()` は `extern "C"` で宣言）
 で記述しています。関数には Doxygen 形式・日本語のコメントを付ける方針です。
 
 未使用の Ethernet と Bluetooth は、フラッシュ容量とビルド時間を節約するため
 [`sdkconfig.defaults`](sdkconfig.defaults) でデフォルト無効にしています。
-USB/UART コンソール、GPIO、LED と、将来的な GPIO 接続のスピーカー HAT などに
+USB/UART コンソール、GPIO、LED、I2S オーディオ（Atomic Voice Base）に
 必要となる機能は有効のままです。
 
 ## 依存ライブラリ・ファイルの置き場所

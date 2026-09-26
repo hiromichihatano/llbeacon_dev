@@ -18,6 +18,7 @@
 #define UART_CLI_USE_USB_SERIAL_JTAG 0
 #endif
 
+#include "audio_tone.h"
 #include "embedded_cli.h"
 #include "led_control.h"
 
@@ -32,6 +33,17 @@ namespace uart_cli {
 #define UART_CLI_TASK_STACK_SIZE 4096
 #define UART_CLI_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define UART_CLI_RX_CHUNK_SIZE 64
+
+#define TONE_FREQ_MIN_HZ 0
+#define TONE_FREQ_MAX_HZ 8000
+#define TONE_DURATION_MIN_MS 10
+#define TONE_DURATION_MAX_MS 5000
+#define TONE_VOLUME_MIN 0
+#define TONE_VOLUME_MAX 100
+#define TONE_DEFAULT_VOLUME 80
+
+#define SOUND_VOLUME_MIN 0
+#define SOUND_VOLUME_MAX 100
 
 #if !UART_CLI_USE_USB_SERIAL_JTAG
 static QueueHandle_t uart_event_queue;
@@ -146,6 +158,100 @@ static bool parse_pattern(const char *token, llbeacon::led_control::Pattern *out
         return true;
     }
     return false;
+}
+
+/**
+ * @brief 波形名文字列をパースする
+ *
+ * @param token 波形名(sine / square / saw)
+ * @param out   パース結果の格納先
+ * @return 成功なら true
+ */
+static bool parse_waveform(const char *token, llbeacon::audio_tone::Waveform *out)
+{
+    if (token == nullptr) {
+        return false;
+    }
+    if (std::strcmp(token, "sine") == 0) {
+        *out = llbeacon::audio_tone::Waveform::SINE;
+        return true;
+    }
+    if (std::strcmp(token, "square") == 0) {
+        *out = llbeacon::audio_tone::Waveform::SQUARE;
+        return true;
+    }
+    if (std::strcmp(token, "saw") == 0) {
+        *out = llbeacon::audio_tone::Waveform::SAW;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief note 文字列（周波数:ミリ秒[:音量]）をパースする
+ *
+ * 音量を省略した場合は TONE_DEFAULT_VOLUME を使う。
+ *
+ * @param token note 文字列
+ * @param out   パース結果の格納先
+ * @return 成功なら true
+ */
+static bool parse_note(const char *token, llbeacon::audio_tone::Note *out)
+{
+    if (token == nullptr || *token == '\0') {
+        return false;
+    }
+
+    // 1つ目の ':' で周波数と残り（duration[:volume]）を分ける。
+    const char *first_colon = std::strchr(token, ':');
+    if (first_colon == nullptr) {
+        return false;
+    }
+
+    char freq_buf[16];
+    const size_t freq_len = static_cast<size_t>(first_colon - token);
+    if (freq_len == 0 || freq_len >= sizeof(freq_buf)) {
+        return false;
+    }
+    std::memcpy(freq_buf, token, freq_len);
+    freq_buf[freq_len] = '\0';
+
+    // 残りを duration と省略可能な volume に分ける。
+    const char *rest = first_colon + 1;
+    const char *second_colon = std::strchr(rest, ':');
+
+    char duration_buf[16];
+    const char *volume_str = nullptr;
+    size_t duration_len = 0;
+    if (second_colon != nullptr) {
+        duration_len = static_cast<size_t>(second_colon - rest);
+        volume_str = second_colon + 1;
+    } else {
+        duration_len = std::strlen(rest);
+    }
+    if (duration_len == 0 || duration_len >= sizeof(duration_buf)) {
+        return false;
+    }
+    std::memcpy(duration_buf, rest, duration_len);
+    duration_buf[duration_len] = '\0';
+
+    uint32_t freq_hz = 0;
+    uint32_t duration_ms = 0;
+    uint32_t volume = TONE_DEFAULT_VOLUME;
+
+    if (!parse_u32(freq_buf, TONE_FREQ_MIN_HZ, TONE_FREQ_MAX_HZ, &freq_hz) ||
+        !parse_u32(duration_buf, TONE_DURATION_MIN_MS, TONE_DURATION_MAX_MS, &duration_ms)) {
+        return false;
+    }
+    if (volume_str != nullptr &&
+        !parse_u32(volume_str, TONE_VOLUME_MIN, TONE_VOLUME_MAX, &volume)) {
+        return false;
+    }
+
+    out->frequency_hz = freq_hz;
+    out->duration_ms = duration_ms;
+    out->volume = static_cast<uint8_t>(volume);
+    return true;
 }
 
 /**
@@ -353,6 +459,240 @@ static void print_status_json(EmbeddedCli *embedded_cli, const llbeacon::led_con
                   pattern_name(status.pattern), static_cast<unsigned long>(status.rgb1),
                   static_cast<unsigned long>(status.rgb2), static_cast<unsigned long>(status.period_ms));
     embeddedCliPrint(embedded_cli, buf);
+}
+
+/**
+ * @brief "sound" コマンドのヘルプ文字列を出力する
+ *
+ * @param embedded_cli 出力先のCLIインスタンス
+ */
+static void print_sound_help(EmbeddedCli *embedded_cli)
+{
+    embeddedCliPrint(embedded_cli,
+                     "Usage:\r\n"
+                     "  sound volume master <0-100>\r\n"
+                     "  sound status [--json]\r\n"
+                     "  sound stop");
+}
+
+/**
+ * @brief "sound status" を human-readable 形式で出力する
+ *
+ * @param embedded_cli 出力先のCLIインスタンス
+ * @param status       現在状態のスナップショット
+ */
+static void print_sound_status_text(EmbeddedCli *embedded_cli, const llbeacon::audio_tone::Status &status)
+{
+    if (!status.supported) {
+        embeddedCliPrint(embedded_cli, "supported: false");
+        return;
+    }
+
+    // note 一覧を "2000:60:80,1000:80:100" の形に組み立てる。
+    char notes_buf[512] = "";
+    for (uint32_t i = 0; i < status.last_tone.note_count; i++) {
+        const llbeacon::audio_tone::Note &note = status.last_tone.notes[i];
+        char note_buf[32];
+        std::snprintf(note_buf, sizeof(note_buf), "%s%lu:%lu:%u",
+                      i == 0 ? "" : ",", static_cast<unsigned long>(note.frequency_hz),
+                      static_cast<unsigned long>(note.duration_ms),
+                      static_cast<unsigned>(note.volume));
+        std::strncat(notes_buf, note_buf, sizeof(notes_buf) - std::strlen(notes_buf) - 1);
+    }
+
+    char buf[640];
+    std::snprintf(buf, sizeof(buf),
+                  "supported: true\r\n"
+                  "playing: %s\r\n"
+                  "master_volume: %u\r\n"
+                  "waveform: %s\r\n"
+                  "notes: %s",
+                  status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
+                  llbeacon::audio_tone::waveform_name(status.last_tone.waveform), notes_buf);
+    embeddedCliPrint(embedded_cli, buf);
+}
+
+/**
+ * @brief "sound status --json" を JSON 形式で出力する
+ *
+ * @param embedded_cli 出力先のCLIインスタンス
+ * @param status       現在状態のスナップショット
+ */
+static void print_sound_status_json(EmbeddedCli *embedded_cli, const llbeacon::audio_tone::Status &status)
+{
+    if (!status.supported) {
+        embeddedCliPrint(embedded_cli, "{\"supported\":false}");
+        return;
+    }
+
+    // note 一覧を JSON 配列の要素列に組み立てる。
+    char notes_buf[1024] = "";
+    for (uint32_t i = 0; i < status.last_tone.note_count; i++) {
+        const llbeacon::audio_tone::Note &note = status.last_tone.notes[i];
+        char note_buf[80];
+        std::snprintf(note_buf, sizeof(note_buf),
+                      "%s{\"frequency_hz\":%lu,\"duration_ms\":%lu,\"volume\":%u}",
+                      i == 0 ? "" : ",", static_cast<unsigned long>(note.frequency_hz),
+                      static_cast<unsigned long>(note.duration_ms),
+                      static_cast<unsigned>(note.volume));
+        std::strncat(notes_buf, note_buf, sizeof(notes_buf) - std::strlen(notes_buf) - 1);
+    }
+
+    char buf[1280];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"supported\":true,\"playing\":%s,\"master_volume\":%u,"
+                  "\"waveform\":\"%s\",\"notes\":[%s]}",
+                  status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
+                  llbeacon::audio_tone::waveform_name(status.last_tone.waveform), notes_buf);
+    embeddedCliPrint(embedded_cli, buf);
+}
+
+/**
+ * @brief "tone" コマンドのヘルプ文字列を出力する
+ *
+ * @param embedded_cli 出力先のCLIインスタンス
+ */
+static void print_tone_help(EmbeddedCli *embedded_cli)
+{
+    embeddedCliPrint(embedded_cli,
+                     "Usage:\r\n"
+                     "  tone <sine|square|saw> <freq:duration[:volume]> [<freq:duration[:volume]> ...]\r\n"
+                     "  freq: 0-8000 (0=silence), duration: 10-5000 ms, volume: 0-100 (default 80)");
+}
+
+/**
+ * @brief "tone" コマンドのバインディング関数
+ *
+ * waveform と 1 個以上の note（周波数:ミリ秒[:音量]）をパースし、
+ * audio_tone へシーケンス再生を要求する。
+ *
+ * @param embedded_cli 呼び出し元のCLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ * @param context      未使用のコンテキストポインタ
+ */
+static void tone_command_binding(EmbeddedCli *embedded_cli, char *args, void *context)
+{
+    (void)context;
+
+    // token 1 が波形名、token 2 以降が note。
+    const char *waveform_token = embeddedCliGetToken(args, 1);
+    llbeacon::audio_tone::Waveform waveform;
+    if (waveform_token == nullptr || !parse_waveform(waveform_token, &waveform)) {
+        print_tone_help(embedded_cli);
+        return;
+    }
+
+    llbeacon::audio_tone::ToneConfig config = {};
+    config.waveform = waveform;
+
+    // token 位置は 1 始まりで、最後の token が token_count 番目になる。
+    // index = 2..token_count が note 列。
+    const uint16_t token_count = embeddedCliGetTokenCount(args);
+    for (uint16_t index = 2; index <= token_count; index++) {
+        const char *note_token = embeddedCliGetToken(args, index);
+        if (note_token == nullptr) {
+            break;
+        }
+        if (config.note_count >= llbeacon::audio_tone::kMaxNotes) {
+            embeddedCliPrint(embedded_cli, "ERR: too many notes (max 16)");
+            return;
+        }
+        if (!parse_note(note_token, &config.notes[config.note_count])) {
+            embeddedCliPrint(embedded_cli, "ERR: invalid note: ");
+            embeddedCliPrint(embedded_cli, note_token);
+            return;
+        }
+        config.note_count++;
+    }
+
+    if (config.note_count == 0) {
+        print_tone_help(embedded_cli);
+        return;
+    }
+
+    if (!llbeacon::audio_tone::is_supported()) {
+        embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+        return;
+    }
+    if (!llbeacon::audio_tone::tone(config)) {
+        embeddedCliPrint(embedded_cli, "ERR: tone is busy");
+        return;
+    }
+    embeddedCliPrint(embedded_cli, "OK");
+}
+
+/**
+ * @brief "sound" コマンドのバインディング関数
+ *
+ * サブコマンドを解釈して audio_tone へ再生要求や設定を行う。
+ *
+ * @param embedded_cli 呼び出し元のCLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ * @param context      未使用のコンテキストポインタ
+ */
+static void sound_command_binding(EmbeddedCli *embedded_cli, char *args, void *context)
+{
+    (void)context;
+
+    // token 1 がサブコマンド名（token 0 は "sound" 本体）。
+    const char *sub = embeddedCliGetToken(args, 1);
+    if (sub == nullptr) {
+        print_sound_help(embedded_cli);
+        return;
+    }
+
+    if (std::strcmp(sub, "volume") == 0) {
+        // master volume は永続設定なので、非対応ボードでは意味を持たない。
+        if (!llbeacon::audio_tone::is_supported()) {
+            embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+            return;
+        }
+
+        const char *target_token = embeddedCliGetToken(args, 2);
+        const char *value_token = embeddedCliGetToken(args, 3);
+        uint32_t value = 0;
+
+        if (target_token == nullptr || value_token == nullptr ||
+            std::strcmp(target_token, "master") != 0 ||
+            !parse_u32(value_token, SOUND_VOLUME_MIN, SOUND_VOLUME_MAX, &value)) {
+            embeddedCliPrint(embedded_cli, "ERR: usage: sound volume master <0-100>");
+            return;
+        }
+
+        llbeacon::audio_tone::set_master_volume(static_cast<uint8_t>(value));
+        embeddedCliPrint(embedded_cli, "OK");
+        return;
+    }
+
+    if (std::strcmp(sub, "stop") == 0) {
+        // stop も audio_tone の状態を変えるので、非対応ボードではエラーにする。
+        if (!llbeacon::audio_tone::is_supported()) {
+            embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+            return;
+        }
+        llbeacon::audio_tone::stop();
+        embeddedCliPrint(embedded_cli, "OK");
+        return;
+    }
+
+    if (std::strcmp(sub, "status") == 0) {
+        // --json が付いていれば JSON、無ければ人間向けテキストで出力する。
+        const char *option = embeddedCliGetToken(args, 2);
+        if (option != nullptr && std::strcmp(option, "--json") != 0) {
+            embeddedCliPrint(embedded_cli, "ERR: usage: sound status [--json]");
+            return;
+        }
+
+        const llbeacon::audio_tone::Status status = llbeacon::audio_tone::get_status();
+        if (option != nullptr) {
+            print_sound_status_json(embedded_cli, status);
+        } else {
+            print_sound_status_text(embedded_cli, status);
+        }
+        return;
+    }
+
+    print_sound_help(embedded_cli);
 }
 
 /**
@@ -578,6 +918,24 @@ void uart_cli_start(void)
         .binding = led_command_binding,
     };
     embeddedCliAddBinding(cli, led_binding);
+
+    CliCommandBinding tone_binding = {
+        .name = "tone",
+        .help = "tone <sine|square|saw> <freq:duration[:volume]> ...",
+        .tokenizeArgs = true,
+        .context = nullptr,
+        .binding = tone_command_binding,
+    };
+    embeddedCliAddBinding(cli, tone_binding);
+
+    CliCommandBinding sound_binding = {
+        .name = "sound",
+        .help = "sound <volume|status|stop> ...",
+        .tokenizeArgs = true,
+        .context = nullptr,
+        .binding = sound_command_binding,
+    };
+    embeddedCliAddBinding(cli, sound_binding);
 
     cli->writeChar = cli_write_char;
 
