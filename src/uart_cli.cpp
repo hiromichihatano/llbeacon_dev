@@ -1,11 +1,15 @@
 #include "uart_cli.h"
 
-#include <cerrno>
-#include <cstdio>
-#include <cstdlib>
+#include <algorithm>
+#include <charconv>
 #include <cstring>
+#include <string_view>
+#include <system_error>
+#include <type_traits>
+#include <utility>
 
 #include "driver/uart.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_err.h"
@@ -51,6 +55,7 @@ namespace uart_cli {
 static QueueHandle_t uart_event_queue;
 #endif
 static EmbeddedCli *cli;
+static const char *TAG = "uart_cli";
 
 /**
  * @brief embedded-cliが1文字出力するたびに呼ばれるコールバック
@@ -73,29 +78,23 @@ static void cli_write_char(EmbeddedCli *embedded_cli, char c)
 /**
  * @brief 10進整数文字列を範囲指定付きでパースする
  *
+ * std::from_chars で文字列全体を数値へ変換する。空白や符号付きの
+ * 先頭は受け付けない（CLI トークンでは想定していないため）。
+ *
  * @param token パース対象文字列
  * @param min   最小値
  * @param max   最大値
  * @param out   パース結果の格納先
  * @return 成功なら true
  */
-static bool parse_u32(const char *token, uint32_t min, uint32_t max, uint32_t *out)
+static bool parse_u32(std::string_view token, uint32_t min, uint32_t max, uint32_t *out)
 {
-    if (token == nullptr || *token == '\0') {
+    uint32_t value = 0;
+    const auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), value);
+    if (ec != std::errc() || ptr != token.data() + token.size() || value < min || value > max) {
         return false;
     }
-
-    errno = 0;
-    char *end = nullptr;
-    const unsigned long value = std::strtoul(token, &end, 10);
-    if (errno != 0 || end == token || *end != '\0') {
-        return false;
-    }
-    if (value < min || value > max) {
-        return false;
-    }
-
-    *out = static_cast<uint32_t>(value);
+    *out = value;
     return true;
 }
 
@@ -132,6 +131,29 @@ static bool parse_hex_rgb(const char *token, uint32_t *out)
 }
 
 /**
+ * @brief 名前と列挙値の組のテーブルから列挙値をパースする
+ *
+ * @param token 対象文字列
+ * @param table 名前と列挙値の組の配列
+ * @param out   パース結果の格納先
+ * @return 成功なら true
+ */
+template <typename Enum, size_t N>
+static bool parse_enum(const char *token, const std::pair<std::string_view, Enum> (&table)[N], Enum *out)
+{
+    if (token == nullptr) {
+        return false;
+    }
+    for (const auto &[name, value] : table) {
+        if (name == token) {
+            *out = value;
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * @brief パターン名文字列をパースする
  *
  * @param token パターン名(pulse / flash / saw / sine)
@@ -140,26 +162,13 @@ static bool parse_hex_rgb(const char *token, uint32_t *out)
  */
 static bool parse_pattern(const char *token, llbeacon::led_control::Pattern *out)
 {
-    if (token == nullptr) {
-        return false;
-    }
-    if (std::strcmp(token, "pulse") == 0) {
-        *out = llbeacon::led_control::Pattern::PULSE;
-        return true;
-    }
-    if (std::strcmp(token, "flash") == 0) {
-        *out = llbeacon::led_control::Pattern::FLASH;
-        return true;
-    }
-    if (std::strcmp(token, "saw") == 0) {
-        *out = llbeacon::led_control::Pattern::SAW;
-        return true;
-    }
-    if (std::strcmp(token, "sine") == 0) {
-        *out = llbeacon::led_control::Pattern::SINE;
-        return true;
-    }
-    return false;
+    static constexpr std::pair<std::string_view, llbeacon::led_control::Pattern> kTable[] = {
+        {"pulse", llbeacon::led_control::Pattern::PULSE},
+        {"flash", llbeacon::led_control::Pattern::FLASH},
+        {"saw", llbeacon::led_control::Pattern::SAW},
+        {"sine", llbeacon::led_control::Pattern::SINE},
+    };
+    return parse_enum(token, kTable, out);
 }
 
 /**
@@ -171,22 +180,12 @@ static bool parse_pattern(const char *token, llbeacon::led_control::Pattern *out
  */
 static bool parse_waveform(const char *token, llbeacon::audio_tone::Waveform *out)
 {
-    if (token == nullptr) {
-        return false;
-    }
-    if (std::strcmp(token, "sine") == 0) {
-        *out = llbeacon::audio_tone::Waveform::SINE;
-        return true;
-    }
-    if (std::strcmp(token, "square") == 0) {
-        *out = llbeacon::audio_tone::Waveform::SQUARE;
-        return true;
-    }
-    if (std::strcmp(token, "saw") == 0) {
-        *out = llbeacon::audio_tone::Waveform::SAW;
-        return true;
-    }
-    return false;
+    static constexpr std::pair<std::string_view, llbeacon::audio_tone::Waveform> kTable[] = {
+        {"sine", llbeacon::audio_tone::Waveform::SINE},
+        {"square", llbeacon::audio_tone::Waveform::SQUARE},
+        {"saw", llbeacon::audio_tone::Waveform::SAW},
+    };
+    return parse_enum(token, kTable, out);
 }
 
 /**
@@ -200,59 +199,35 @@ static bool parse_waveform(const char *token, llbeacon::audio_tone::Waveform *ou
  */
 static bool parse_note(const char *token, llbeacon::audio_tone::Note *out)
 {
-    if (token == nullptr || *token == '\0') {
+    if (token == nullptr) {
         return false;
     }
 
-    // 1つ目の ':' で周波数と残り（duration[:volume]）を分ける。
-    const char *first_colon = std::strchr(token, ':');
-    if (first_colon == nullptr) {
+    // "周波数:ミリ秒[:音量]" を ':' で3分割する。
+    const std::string_view text(token);
+    const size_t first = text.find(':');
+    if (first == std::string_view::npos) {
         return false;
     }
-
-    char freq_buf[16];
-    const size_t freq_len = static_cast<size_t>(first_colon - token);
-    if (freq_len == 0 || freq_len >= sizeof(freq_buf)) {
-        return false;
-    }
-    std::memcpy(freq_buf, token, freq_len);
-    freq_buf[freq_len] = '\0';
-
-    // 残りを duration と省略可能な volume に分ける。
-    const char *rest = first_colon + 1;
-    const char *second_colon = std::strchr(rest, ':');
-
-    char duration_buf[16];
-    const char *volume_str = nullptr;
-    size_t duration_len = 0;
-    if (second_colon != nullptr) {
-        duration_len = static_cast<size_t>(second_colon - rest);
-        volume_str = second_colon + 1;
-    } else {
-        duration_len = std::strlen(rest);
-    }
-    if (duration_len == 0 || duration_len >= sizeof(duration_buf)) {
-        return false;
-    }
-    std::memcpy(duration_buf, rest, duration_len);
-    duration_buf[duration_len] = '\0';
+    const std::string_view rest = text.substr(first + 1);
+    const size_t second = rest.find(':');
+    const std::string_view freq = text.substr(0, first);
+    const std::string_view duration = rest.substr(0, second);  // npos なら残り全体
+    const std::string_view volume =
+        second == std::string_view::npos ? std::string_view{} : rest.substr(second + 1);
 
     uint32_t freq_hz = 0;
     uint32_t duration_ms = 0;
-    uint32_t volume = TONE_DEFAULT_VOLUME;
-
-    if (!parse_u32(freq_buf, TONE_FREQ_MIN_HZ, TONE_FREQ_MAX_HZ, &freq_hz) ||
-        !parse_u32(duration_buf, TONE_DURATION_MIN_MS, TONE_DURATION_MAX_MS, &duration_ms)) {
-        return false;
-    }
-    if (volume_str != nullptr &&
-        !parse_u32(volume_str, TONE_VOLUME_MIN, TONE_VOLUME_MAX, &volume)) {
+    uint32_t volume_value = TONE_DEFAULT_VOLUME;
+    if (!parse_u32(freq, TONE_FREQ_MIN_HZ, TONE_FREQ_MAX_HZ, &freq_hz) ||
+        !parse_u32(duration, TONE_DURATION_MIN_MS, TONE_DURATION_MAX_MS, &duration_ms) ||
+        (!volume.empty() && !parse_u32(volume, TONE_VOLUME_MIN, TONE_VOLUME_MAX, &volume_value))) {
         return false;
     }
 
     out->frequency_hz = freq_hz;
     out->duration_ms = duration_ms;
-    out->volume = static_cast<uint8_t>(volume);
+    out->volume = static_cast<uint8_t>(volume_value);
     return true;
 }
 
@@ -265,30 +240,14 @@ static bool parse_note(const char *token, llbeacon::audio_tone::Note *out)
  */
 static bool parse_mode(const char *token, llbeacon::led_control::Mode *out)
 {
-    if (token == nullptr) {
-        return false;
-    }
-    if (std::strcmp(token, "active") == 0) {
-        *out = llbeacon::led_control::Mode::ACTIVE;
-        return true;
-    }
-    if (std::strcmp(token, "dimmer1") == 0) {
-        *out = llbeacon::led_control::Mode::DIMMER1;
-        return true;
-    }
-    if (std::strcmp(token, "dimmer2") == 0) {
-        *out = llbeacon::led_control::Mode::DIMMER2;
-        return true;
-    }
-    if (std::strcmp(token, "sleep") == 0) {
-        *out = llbeacon::led_control::Mode::SLEEP;
-        return true;
-    }
-    if (std::strcmp(token, "notification") == 0) {
-        *out = llbeacon::led_control::Mode::NOTIFICATION;
-        return true;
-    }
-    return false;
+    static constexpr std::pair<std::string_view, llbeacon::led_control::Mode> kTable[] = {
+        {"active", llbeacon::led_control::Mode::ACTIVE},
+        {"dimmer1", llbeacon::led_control::Mode::DIMMER1},
+        {"dimmer2", llbeacon::led_control::Mode::DIMMER2},
+        {"sleep", llbeacon::led_control::Mode::SLEEP},
+        {"notification", llbeacon::led_control::Mode::NOTIFICATION},
+    };
+    return parse_enum(token, kTable, out);
 }
 
 /**
@@ -300,22 +259,12 @@ static bool parse_mode(const char *token, llbeacon::led_control::Mode *out)
  */
 static bool parse_dimmer_target(const char *token, llbeacon::led_control::DimmerTarget *out)
 {
-    if (token == nullptr) {
-        return false;
-    }
-    if (std::strcmp(token, "active") == 0) {
-        *out = llbeacon::led_control::DimmerTarget::ACTIVE;
-        return true;
-    }
-    if (std::strcmp(token, "dimmer1") == 0) {
-        *out = llbeacon::led_control::DimmerTarget::DIMMER1;
-        return true;
-    }
-    if (std::strcmp(token, "dimmer2") == 0) {
-        *out = llbeacon::led_control::DimmerTarget::DIMMER2;
-        return true;
-    }
-    return false;
+    static constexpr std::pair<std::string_view, llbeacon::led_control::DimmerTarget> kTable[] = {
+        {"active", llbeacon::led_control::DimmerTarget::ACTIVE},
+        {"dimmer1", llbeacon::led_control::DimmerTarget::DIMMER1},
+        {"dimmer2", llbeacon::led_control::DimmerTarget::DIMMER2},
+    };
+    return parse_enum(token, kTable, out);
 }
 
 /**
@@ -327,22 +276,12 @@ static bool parse_dimmer_target(const char *token, llbeacon::led_control::Dimmer
  */
 static bool parse_time_target(const char *token, llbeacon::led_control::TimeTarget *out)
 {
-    if (token == nullptr) {
-        return false;
-    }
-    if (std::strcmp(token, "dimmer1") == 0) {
-        *out = llbeacon::led_control::TimeTarget::DIMMER1;
-        return true;
-    }
-    if (std::strcmp(token, "dimmer2") == 0) {
-        *out = llbeacon::led_control::TimeTarget::DIMMER2;
-        return true;
-    }
-    if (std::strcmp(token, "notification") == 0) {
-        *out = llbeacon::led_control::TimeTarget::NOTIFICATION;
-        return true;
-    }
-    return false;
+    static constexpr std::pair<std::string_view, llbeacon::led_control::TimeTarget> kTable[] = {
+        {"dimmer1", llbeacon::led_control::TimeTarget::DIMMER1},
+        {"dimmer2", llbeacon::led_control::TimeTarget::DIMMER2},
+        {"notification", llbeacon::led_control::TimeTarget::NOTIFICATION},
+    };
+    return parse_enum(token, kTable, out);
 }
 
 /**
@@ -390,6 +329,158 @@ static const char *mode_name(llbeacon::led_control::Mode mode)
 }
 
 /**
+ * @brief 6桁ゼロ埋め大文字16進表記を指示するためのラッパー
+ *
+ * append_format の {} に渡すと "00FFAA" のように整形される。
+ */
+struct Hex06 {
+    uint32_t value;  //!< 整形対象の値
+};
+
+/**
+ * @brief 固定長バッファへ文字列を追記する
+ *
+ * 容量を超える場合は NUL 終界の範囲内で打ち切る（バッファオーバーフロー防止）。
+ *
+ * @param buf      出力バッファ
+ * @param capacity buf の容量(バイト)
+ * @param used     現在の使用長(バイト)。追記した分だけ進む
+ * @param text     追記する文字列
+ * @return 打ち切ったなら true
+ */
+static bool append_one(char *buf, size_t capacity, size_t *used, std::string_view text)
+{
+    const size_t room = capacity - *used - 1;  // NUL 終端用に 1 バイト残す
+    const size_t count = std::min(text.size(), room);
+    text.copy(buf + *used, count);
+    *used += count;
+    buf[*used] = '\0';
+    return text.size() > room;
+}
+
+/**
+ * @brief 固定長バッファへ10進整数を追記する
+ *
+ * std::to_chars で変換した結果を append_one(std::string_view) に委譲する。
+ *
+ * @param buf      出力バッファ
+ * @param capacity buf の容量(バイト)
+ * @param used     現在の使用長(バイト)。追記した分だけ進む
+ * @param value    追記する整数
+ * @return 打ち切ったなら true
+ */
+template <typename T> requires(std::is_integral_v<T> && !std::is_same_v<T, bool>)
+static bool append_one(char *buf, size_t capacity, size_t *used, T value)
+{
+    char tmp[24];  // int64_t / uint64_t の最大桁数+符号に十分
+    const auto [ptr, ec] = std::to_chars(tmp, tmp + sizeof(tmp), value);
+    if (ec != std::errc()) {
+        return false;
+    }
+    return append_one(buf, capacity, used, std::string_view(tmp, static_cast<size_t>(ptr - tmp)));
+}
+
+/**
+ * @brief 固定長バッファへ Hex06 を6桁ゼロ埋め大文字16進で追記する
+ *
+ * @param buf      出力バッファ
+ * @param capacity buf の容量(バイト)
+ * @param used     現在の使用長(バイト)。追記した分だけ進む
+ * @param hex      整形対象
+ * @return 打ち切ったなら true
+ */
+static bool append_one(char *buf, size_t capacity, size_t *used, Hex06 hex)
+{
+    char tmp[8];  // uint32_t の16進最大桁数に一致
+    const auto [ptr, ec] = std::to_chars(tmp, tmp + sizeof(tmp), hex.value, 16);
+    if (ec != std::errc()) {
+        return false;
+    }
+    for (char *p = tmp; p != ptr; p++) {
+        if (*p >= 'a' && *p <= 'f') {
+            *p = static_cast<char>(*p - 'a' + 'A');
+        }
+    }
+    bool truncated = false;
+    const size_t digits = static_cast<size_t>(ptr - tmp);
+    for (size_t i = digits; i < 6; i++) {
+        truncated |= append_one(buf, capacity, used, "0");
+    }
+    truncated |= append_one(buf, capacity, used, std::string_view(tmp, digits));
+    return truncated;
+}
+
+/**
+ * @brief フォーマット文字列のリテラル部を次の {} まで追記する
+ *
+ * "{{" と "}}" はそれぞれ "{" と "}" のエスケープとして扱う。
+ * {} を見つけた時点で呼び出し元に戻り、引数の追記は呼び出し元が行う。
+ *
+ * @param buf      出力バッファ
+ * @param capacity buf の容量(バイト)
+ * @param used     現在の使用長(バイト)。追記した分だけ進む
+ * @param fmt      フォーマット文字列
+ * @param pos      fmt の走査位置。{} の直後まで進む
+ * @return 打ち切ったなら true
+ */
+static bool append_literal(char *buf, size_t capacity, size_t *used, std::string_view fmt, size_t *pos)
+{
+    bool truncated = false;
+    size_t start = *pos;
+    while (*pos < fmt.size()) {
+        const char c = fmt[*pos];
+        const bool doubled = (*pos + 1 < fmt.size()) && (fmt[*pos + 1] == c);
+        if ((c == '{' || c == '}') && doubled) {
+            // "{{" / "}}" はエスケープされた括弧1文字。
+            truncated |= append_one(buf, capacity, used, fmt.substr(start, *pos - start));
+            truncated |= append_one(buf, capacity, used, std::string_view(&c, 1));
+            *pos += 2;
+            start = *pos;
+            continue;
+        }
+        if (c == '{') {
+            // "{}" がプレースホルダ。直前までのリテラルを追記して戻る。
+            truncated |= append_one(buf, capacity, used, fmt.substr(start, *pos - start));
+            *pos += 2;
+            return truncated;
+        }
+        *pos += 1;
+    }
+    truncated |= append_one(buf, capacity, used, fmt.substr(start));
+    return truncated;
+}
+
+/**
+ * @brief 固定長バッファへフォーマット文字列と引数を追記する
+ *
+ * プレースホルダは {} のみ対応。整数は10進、Hex06 は6桁ゼロ埋め大文字16進、
+ * それ以外は文字列として追記する。容量を超える場合は NUL 終端を保ったまま
+ * 打ち切る（バッファオーバーフロー防止）。
+ *
+ * @param buf      出力バッファ
+ * @param capacity buf の容量(バイト)
+ * @param used     現在の使用長(バイト)。追記した分だけ進む
+ * @param fmt      フォーマット文字列
+ * @param args     プレースホルダへ順に埋める引数
+ * @return 打ち切ったなら true
+ */
+template <typename... Args>
+static bool append_format(char *buf, size_t capacity, size_t *used,
+                          std::string_view fmt, Args &&...args)
+{
+    bool truncated = false;
+    size_t pos = 0;
+    // 引数ゼロの呼び出しでは fold が空になりラムダが未使用となるため抑制する。
+    [[maybe_unused]] auto append_arg = [&](auto &&arg) {
+        truncated |= append_literal(buf, capacity, used, fmt, &pos);
+        truncated |= append_one(buf, capacity, used, std::forward<decltype(arg)>(arg));
+    };
+    (append_arg(args), ...);
+    truncated |= append_literal(buf, capacity, used, fmt, &pos);
+    return truncated;
+}
+
+/**
  * @brief "led" コマンドのヘルプ文字列を出力する
  *
  * @param embedded_cli 出力先のCLIインスタンス
@@ -415,27 +506,30 @@ static void print_led_help(EmbeddedCli *embedded_cli)
 static void print_status_text(EmbeddedCli *embedded_cli, const llbeacon::led_control::Status &status)
 {
     char buf[512];
-    std::snprintf(buf, sizeof(buf),
-                  "mode: %s\r\n"
-                  "max_brightness: %u\r\n"
-                  "dimmer.active: %u\r\n"
-                  "dimmer.dimmer1: %u\r\n"
-                  "dimmer.dimmer2: %u\r\n"
-                  "dimmer.sleep: 0\r\n"
-                  "time.dimmer1_s: %lu\r\n"
-                  "time.dimmer2_s: %lu\r\n"
-                  "time.notification_s: %lu\r\n"
-                  "pattern: %s\r\n"
-                  "rgb1: %06lX\r\n"
-                  "rgb2: %06lX\r\n"
-                  "period_ms: %lu",
-                  mode_name(status.mode), status.max_brightness, status.dimmer_active,
-                  status.dimmer_dimmer1, status.dimmer_dimmer2,
-                  static_cast<unsigned long>(status.time_dimmer1_s),
-                  static_cast<unsigned long>(status.time_dimmer2_s),
-                  static_cast<unsigned long>(status.time_notification_s),
-                  pattern_name(status.pattern), static_cast<unsigned long>(status.rgb1),
-                  static_cast<unsigned long>(status.rgb2), static_cast<unsigned long>(status.period_ms));
+    size_t used = 0;
+    const bool truncated = append_format(
+        buf, sizeof(buf), &used,
+        "mode: {}\r\n"
+        "max_brightness: {}\r\n"
+        "dimmer.active: {}\r\n"
+        "dimmer.dimmer1: {}\r\n"
+        "dimmer.dimmer2: {}\r\n"
+        "dimmer.sleep: 0\r\n"
+        "time.dimmer1_s: {}\r\n"
+        "time.dimmer2_s: {}\r\n"
+        "time.notification_s: {}\r\n"
+        "pattern: {}\r\n"
+        "rgb1: {}\r\n"
+        "rgb2: {}\r\n"
+        "period_ms: {}",
+        mode_name(status.mode), static_cast<unsigned>(status.max_brightness),
+        static_cast<unsigned>(status.dimmer_active), static_cast<unsigned>(status.dimmer_dimmer1),
+        static_cast<unsigned>(status.dimmer_dimmer2), status.time_dimmer1_s, status.time_dimmer2_s,
+        status.time_notification_s, pattern_name(status.pattern), Hex06{status.rgb1},
+        Hex06{status.rgb2}, status.period_ms);
+    if (truncated) {
+        ESP_LOGW(TAG, "led status text truncated");
+    }
     embeddedCliPrint(embedded_cli, buf);
 }
 
@@ -448,18 +542,21 @@ static void print_status_text(EmbeddedCli *embedded_cli, const llbeacon::led_con
 static void print_status_json(EmbeddedCli *embedded_cli, const llbeacon::led_control::Status &status)
 {
     char buf[512];
-    std::snprintf(buf, sizeof(buf),
-                  "{\"mode\":\"%s\",\"max_brightness\":%u,"
-                  "\"dimmer\":{\"active\":%u,\"dimmer1\":%u,\"dimmer2\":%u,\"sleep\":0},"
-                  "\"time\":{\"dimmer1_s\":%lu,\"dimmer2_s\":%lu,\"notification_s\":%lu},"
-                  "\"pattern\":\"%s\",\"rgb1\":\"%06lX\",\"rgb2\":\"%06lX\",\"period_ms\":%lu}",
-                  mode_name(status.mode), status.max_brightness, status.dimmer_active,
-                  status.dimmer_dimmer1, status.dimmer_dimmer2,
-                  static_cast<unsigned long>(status.time_dimmer1_s),
-                  static_cast<unsigned long>(status.time_dimmer2_s),
-                  static_cast<unsigned long>(status.time_notification_s),
-                  pattern_name(status.pattern), static_cast<unsigned long>(status.rgb1),
-                  static_cast<unsigned long>(status.rgb2), static_cast<unsigned long>(status.period_ms));
+    size_t used = 0;
+    const bool truncated = append_format(
+        buf, sizeof(buf), &used,
+        "{{\"mode\":\"{}\",\"max_brightness\":{},"
+        "\"dimmer\":{{\"active\":{},\"dimmer1\":{},\"dimmer2\":{},\"sleep\":0}},"
+        "\"time\":{{\"dimmer1_s\":{},\"dimmer2_s\":{},\"notification_s\":{}}},"
+        "\"pattern\":\"{}\",\"rgb1\":\"{}\",\"rgb2\":\"{}\",\"period_ms\":{}}}",
+        mode_name(status.mode), static_cast<unsigned>(status.max_brightness),
+        static_cast<unsigned>(status.dimmer_active), static_cast<unsigned>(status.dimmer_dimmer1),
+        static_cast<unsigned>(status.dimmer_dimmer2), status.time_dimmer1_s, status.time_dimmer2_s,
+        status.time_notification_s, pattern_name(status.pattern), Hex06{status.rgb1},
+        Hex06{status.rgb2}, status.period_ms);
+    if (truncated) {
+        ESP_LOGW(TAG, "led status json truncated");
+    }
     embeddedCliPrint(embedded_cli, buf);
 }
 
@@ -490,27 +587,27 @@ static void print_sound_status_text(EmbeddedCli *embedded_cli, const llbeacon::a
         return;
     }
 
+    char buf[640];
+    size_t used = 0;
     // note 一覧を "2000:60:80,1000:80:100" の形に組み立てる。
-    char notes_buf[512] = "";
+    bool truncated =
+        append_format(buf, sizeof(buf), &used,
+                      "supported: true\r\n"
+                      "playing: {}\r\n"
+                      "master_volume: {}\r\n"
+                      "waveform: {}\r\n"
+                      "notes: ",
+                      status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
+                      llbeacon::audio_tone::waveform_name(status.last_tone.waveform));
     for (uint32_t i = 0; i < status.last_tone.note_count; i++) {
         const llbeacon::audio_tone::Note &note = status.last_tone.notes[i];
-        char note_buf[32];
-        std::snprintf(note_buf, sizeof(note_buf), "%s%lu:%lu:%u",
-                      i == 0 ? "" : ",", static_cast<unsigned long>(note.frequency_hz),
-                      static_cast<unsigned long>(note.duration_ms),
-                      static_cast<unsigned>(note.volume));
-        std::strncat(notes_buf, note_buf, sizeof(notes_buf) - std::strlen(notes_buf) - 1);
+        truncated |= append_format(buf, sizeof(buf), &used, "{}{}:{}:{}",
+                                   i == 0 ? "" : ",", note.frequency_hz, note.duration_ms,
+                                   static_cast<unsigned>(note.volume));
     }
-
-    char buf[640];
-    std::snprintf(buf, sizeof(buf),
-                  "supported: true\r\n"
-                  "playing: %s\r\n"
-                  "master_volume: %u\r\n"
-                  "waveform: %s\r\n"
-                  "notes: %s",
-                  status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
-                  llbeacon::audio_tone::waveform_name(status.last_tone.waveform), notes_buf);
+    if (truncated) {
+        ESP_LOGW(TAG, "sound status text truncated");
+    }
     embeddedCliPrint(embedded_cli, buf);
 }
 
@@ -527,25 +624,25 @@ static void print_sound_status_json(EmbeddedCli *embedded_cli, const llbeacon::a
         return;
     }
 
-    // note 一覧を JSON 配列の要素列に組み立てる。
-    char notes_buf[1024] = "";
+    char buf[1280];
+    size_t used = 0;
+    // note 一覧を JSON 配列として組み立てる。
+    bool truncated = append_format(
+        buf, sizeof(buf), &used,
+        "{{\"supported\":true,\"playing\":{},\"master_volume\":{},\"waveform\":\"{}\",\"notes\":[",
+        status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
+        llbeacon::audio_tone::waveform_name(status.last_tone.waveform));
     for (uint32_t i = 0; i < status.last_tone.note_count; i++) {
         const llbeacon::audio_tone::Note &note = status.last_tone.notes[i];
-        char note_buf[80];
-        std::snprintf(note_buf, sizeof(note_buf),
-                      "%s{\"frequency_hz\":%lu,\"duration_ms\":%lu,\"volume\":%u}",
-                      i == 0 ? "" : ",", static_cast<unsigned long>(note.frequency_hz),
-                      static_cast<unsigned long>(note.duration_ms),
-                      static_cast<unsigned>(note.volume));
-        std::strncat(notes_buf, note_buf, sizeof(notes_buf) - std::strlen(notes_buf) - 1);
+        truncated |= append_format(buf, sizeof(buf), &used,
+                                   "{}{{\"frequency_hz\":{},\"duration_ms\":{},\"volume\":{}}}",
+                                   i == 0 ? "" : ",", note.frequency_hz, note.duration_ms,
+                                   static_cast<unsigned>(note.volume));
     }
-
-    char buf[1280];
-    std::snprintf(buf, sizeof(buf),
-                  "{\"supported\":true,\"playing\":%s,\"master_volume\":%u,"
-                  "\"waveform\":\"%s\",\"notes\":[%s]}",
-                  status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
-                  llbeacon::audio_tone::waveform_name(status.last_tone.waveform), notes_buf);
+    truncated |= append_format(buf, sizeof(buf), &used, "]}}");
+    if (truncated) {
+        ESP_LOGW(TAG, "sound status json truncated");
+    }
     embeddedCliPrint(embedded_cli, buf);
 }
 
