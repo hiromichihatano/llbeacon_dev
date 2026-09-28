@@ -9,7 +9,6 @@
 #include "esp_log.h"
 #include "llbeacon_board.h"
 
-#if defined(LLBEACON_BOARD_ATOMS3_LITE)
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
@@ -18,7 +17,6 @@
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "es8311_codec.h"
-#endif
 
 namespace llbeacon {
 namespace audio_tone {
@@ -36,8 +34,8 @@ const char *waveform_name(Waveform waveform)
     return "unknown";
 }
 
-#if defined(LLBEACON_BOARD_ATOMS3_LITE)
-
+// 16kHz サンプリング。上限 8000Hz は Nyquist 周波数そのものなので、
+// square / saw の高域は歪んで聞こえる（CLI の周波数上限も 8000Hz）。
 #define AUDIO_TONE_SAMPLE_RATE 16000
 #define AUDIO_TONE_CHANNELS 2
 #define AUDIO_TONE_BASE_AMPLITUDE 20000
@@ -65,7 +63,6 @@ static esp_codec_dev_handle_t codec_dev;
 static bool audio_ready = false;
 
 static QueueHandle_t tone_queue;
-static TaskHandle_t tone_task_handle;
 static std::atomic<bool> playing{false};
 static std::atomic<bool> stop_requested{false};
 static std::atomic<uint32_t> master_volume{AUDIO_TONE_DEFAULT_MASTER_VOLUME};
@@ -213,9 +210,7 @@ static void audio_tone_task(void *arg)
             continue;
         }
 
-        // 再生中フラグを立てて、次の tone() 要求を拒否させる。
-        playing.store(true);
-
+        // 再生中フラグは tone() 側で受理時に立てている。ここでは再生を開始する。
         bool write_failed = false;
         float phase = 0.0f;
 
@@ -484,13 +479,20 @@ static bool init_codec(void)
 /** @copydoc start */
 void start(void)
 {
-    // Voice Base に必要な周辺を順に初期化する。
-    ESP_ERROR_CHECK(init_i2c());
+    // Voice Base に必要な周辺を順に初期化する。失敗しても起動は継続し、
+    // audio_ready を立てないことで音声機能だけを無効化する。
+    if (init_i2c() != ESP_OK) {
+        ESP_LOGE(TAG, "I2C init failed; audio_tone disabled");
+        return;
+    }
     if (!init_pi4ioe()) {
         // PI4IOE が無くても codec 初期化は試す。失敗するとミュートのままになる。
         ESP_LOGE(TAG, "PI4IOE init failed; speaker may stay muted");
     }
-    ESP_ERROR_CHECK(init_i2s());
+    if (init_i2s() != ESP_OK) {
+        ESP_LOGE(TAG, "I2S init failed; audio_tone disabled");
+        return;
+    }
     if (!init_codec()) {
         ESP_LOGE(TAG, "codec init failed; audio_tone disabled");
         return;
@@ -505,7 +507,7 @@ void start(void)
 
     // CLI タスクをブロックしないよう、再生は専用タスクで行う。
     if (xTaskCreate(audio_tone_task, "audio_tone", AUDIO_TONE_TASK_STACK_SIZE, nullptr,
-                    AUDIO_TONE_TASK_PRIORITY, &tone_task_handle) != pdPASS) {
+                    AUDIO_TONE_TASK_PRIORITY, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "failed to create audio_tone task");
         vQueueDelete(tone_queue);
         tone_queue = nullptr;
@@ -520,7 +522,12 @@ void start(void)
 bool tone(const ToneConfig &config)
 {
     // 初期化済みで、かつ現在再生していない場合だけ要求を受け付ける。
-    if (!audio_ready || playing.load()) {
+    // 受理直後から status に反映させるため、ここで playing を先に立てる。
+    if (!audio_ready) {
+        return false;
+    }
+    bool expected = false;
+    if (!playing.compare_exchange_strong(expected, true)) {
         return false;
     }
 
@@ -544,6 +551,7 @@ bool tone(const ToneConfig &config)
         if (stop_was_requested) {
             stop_requested.store(true);
         }
+        playing.store(false);
         return false;
     }
 
@@ -585,55 +593,6 @@ bool is_supported(void)
 {
     return audio_ready;
 }
-
-#else  // !LLBEACON_BOARD_ATOMS3_LITE
-
-/** @copydoc start */
-void start(void)
-{
-}
-
-/** @copydoc tone */
-bool tone(const ToneConfig &config)
-{
-    (void)config;
-    return false;
-}
-
-/** @copydoc stop */
-void stop(void)
-{
-}
-
-/** @copydoc set_master_volume */
-void set_master_volume(uint8_t volume)
-{
-    (void)volume;
-}
-
-/** @copydoc get_status */
-Status get_status(void)
-{
-    const Status status = {
-        .supported = false,
-        .playing = false,
-        .master_volume = 0,
-        .last_tone = {
-            .waveform = Waveform::SINE,
-            .note_count = 1,
-            .notes = {Note{880, 200, 80}},
-        },
-    };
-    return status;
-}
-
-/** @copydoc is_supported */
-bool is_supported(void)
-{
-    return false;
-}
-
-#endif  // LLBEACON_BOARD_ATOMS3_LITE
 
 }  // namespace audio_tone
 }  // namespace llbeacon

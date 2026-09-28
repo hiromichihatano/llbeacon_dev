@@ -78,9 +78,9 @@ this repository, and cite the issue number when a change implements one.
     handle and a 10 ms FreeRTOS task that renders the current pattern and
     applies dimmer mode transitions.
   - `src/audio_tone.cpp` / `include/audio_tone.h` — initializes the ES8311
-    codec (via `esp_codec_dev`) and I2S on AtomS3 Lite + Atomic Voice Base, and
-    plays requested tone sequences (waveform + notes of frequency / duration /
-    volume) in a dedicated task. No-op on other boards.
+    codec (via `esp_codec_dev`) and I2S on Atom Lite / AtomS3 Lite + Atomic
+    Voice Base, and plays requested tone sequences (waveform + notes of
+    frequency / duration / volume) in a dedicated task.
   - `src/button.cpp` / `include/button.h` — GPIO ISR plus a FreeRTOS task that
     classifies short/long presses and forwards them to `led_control`.
   - `src/uart_cli.cpp` / `include/uart_cli.h` — feeds an `embedded-cli` instance
@@ -91,10 +91,11 @@ this repository, and cite the issue number when a change implements one.
 - `sdkconfig.defaults` disables peripherals the project does not use
   (`CONFIG_ETH_USE_SPI_ETHERNET`, `CONFIG_ETH_USE_ESP32_EMAC`, `CONFIG_BT_ENABLED`)
   while keeping the USB/UART console, GPIO, LED, and I2S audio
-  (Atomic Voice Base) support. Enable a new peripheral here, not in the
-  generated files. `CONFIG_SOC_WIFI_SUPPORTED` / `CONFIG_ESP_WIFI_ENABLED`
-  cannot be disabled via Kconfig and cost nothing unless application code calls
-  `esp_wifi_init()`.
+  (Atomic Voice Base) support. It also selects only the ES8311 codec and
+  switches the other `CONFIG_CODEC_*` drivers off. Enable or change a
+  peripheral/codec here, not in the generated files.
+  `CONFIG_SOC_WIFI_SUPPORTED` / `CONFIG_ESP_WIFI_ENABLED` cannot be disabled
+  via Kconfig and cost nothing unless application code calls `esp_wifi_init()`.
 - `sdkconfig.m5stack-atoms3` and `sdkconfig.m5stack-atom` are ESP-IDF 6.1.0
   generated files marked "DO NOT EDIT". Change `sdkconfig.defaults` or the
   PlatformIO/ESP-IDF configuration flow, then regenerate and keep the results.

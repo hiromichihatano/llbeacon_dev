@@ -1,5 +1,5 @@
 # Disable unused peripherals to save flash and build time.
-# USB/UART console, GPIO, and LED peripherals remain enabled by default.
+# USB/UART console, GPIO, LED, and I2S audio (Atomic Voice Base) remain enabled.
 #
 # ESP_WIFI_ENABLED reflects Wi-Fi hardware capability and has no user
 # prompt, so it cannot be disabled here; the Wi-Fi driver is not
@@ -7,3 +7,20 @@
 CONFIG_ETH_USE_SPI_ETHERNET=n
 CONFIG_ETH_USE_ESP32_EMAC=n
 CONFIG_BT_ENABLED=n
+
+# Only the ES8311 codec (Atomic Voice Base) is used. The esp_codec_dev
+# component enables every codec driver by default, so switch the rest off.
+CONFIG_CODEC_ES8311_SUPPORT=y
+CONFIG_CODEC_ES7210_SUPPORT=n
+CONFIG_CODEC_ES7243_SUPPORT=n
+CONFIG_CODEC_ES7243E_SUPPORT=n
+CONFIG_CODEC_ES8156_SUPPORT=n
+CONFIG_CODEC_AW88298_SUPPORT=n
+CONFIG_CODEC_ES8389_SUPPORT=n
+CONFIG_CODEC_ES8374_SUPPORT=n
+CONFIG_CODEC_ES8388_SUPPORT=n
+CONFIG_CODEC_TAS5805M_SUPPORT=n
+CONFIG_CODEC_ZL38063_SUPPORT=n
+CONFIG_CODEC_CJC8910_SUPPORT=n
+CONFIG_CODEC_DUMMY_SUPPORT=n
+CONFIG_CODEC_DATA_ADC_SUPPORT=n

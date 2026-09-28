@@ -30,10 +30,12 @@ namespace uart_cli {
 #define UART_CLI_RX_BUFFER_SIZE 256
 #define UART_CLI_TX_BUFFER_SIZE 0
 #define UART_CLI_EVENT_QUEUE_SIZE 10
-#define UART_CLI_TASK_STACK_SIZE 4096
+#define UART_CLI_TASK_STACK_SIZE 8192
 #define UART_CLI_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define UART_CLI_RX_CHUNK_SIZE 64
 
+// サンプルレート 16kHz に対し上限 8000Hz は Nyquist 周波数そのもの。
+// square / saw は高域ほど歪んで聞こえる点に注意（詳細は README 参照）。
 #define TONE_FREQ_MIN_HZ 0
 #define TONE_FREQ_MAX_HZ 8000
 #define TONE_DURATION_MIN_MS 10

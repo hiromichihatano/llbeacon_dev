@@ -51,10 +51,13 @@ tone sine 2000:60 1000:80
 tone square 1500:50 0:30 1500:50
 ```
 
-AtomS3 Lite + Atomic Voice Base (A149) では、`tone` コマンドで sine /
-square / saw のトーンを再生できます（[`src/audio_tone.cpp`](src/audio_tone.cpp) /
+Atom Lite / AtomS3 Lite + Atomic Voice Base (A149) では、`tone` コマンドで
+sine / square / saw のトーンを再生できます（[`src/audio_tone.cpp`](src/audio_tone.cpp) /
 [`include/audio_tone.h`](include/audio_tone.h)、[esp_codec_dev] 使用）。
 最終音量は master volume と note 個別音量の積です。
+
+サンプルレートは 16kHz のため、周波数上限 `8000` は Nyquist 周波数そのもの
+です。square / saw は高域ほど歪んで聞こえます（低域ほどクリーンです）。
 
 仕様の詳細は [`docs/led-control-requirements.md`](docs/led-control-requirements.md)、
 設計は [`docs/led-control-design.md`](docs/led-control-design.md) と
