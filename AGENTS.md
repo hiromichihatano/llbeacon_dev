@@ -30,7 +30,7 @@ Both boards must build for a change to be complete — that is the only automate
 check here (no on-device CI; verify hardware behaviour by flashing and watching
 `pio device monitor -e <env>`).
 
-## GitHub issues
+## GitHub issues and PR reviews
 
 The repository is `hiromichihatano/llbeacon_dev` on GitHub (`origin` points at
 it), and the `gh` CLI is installed and already authenticated as
@@ -47,6 +47,11 @@ gh issue create --repo hiromichihatano/llbeacon_dev \
 
 Issue text is in Japanese. Prefer `gh` over `curl`/web search for anything in
 this repository, and cite the issue number when a change implements one.
+
+The same `gh`-first rule applies to PRs. When acting on review threads, post
+replies only: **never resolve or unresolve a review thread yourself** — the
+owner resolves each thread after checking the reply. Never merge a PR either;
+the owner decides when a PR is ready.
 
 ## Board abstraction
 
