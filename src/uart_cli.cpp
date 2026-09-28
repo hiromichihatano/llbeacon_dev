@@ -587,24 +587,18 @@ static void print_sound_status_text(EmbeddedCli *embedded_cli, const llbeacon::a
         return;
     }
 
-    char buf[640];
+    char buf[256];
     size_t used = 0;
-    // note 一覧を "2000:60:80,1000:80:100" の形に組み立てる。
-    bool truncated =
-        append_format(buf, sizeof(buf), &used,
-                      "supported: true\r\n"
-                      "playing: {}\r\n"
-                      "master_volume: {}\r\n"
-                      "waveform: {}\r\n"
-                      "notes: ",
-                      status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
-                      llbeacon::audio_tone::waveform_name(status.last_tone.waveform));
-    for (uint32_t i = 0; i < status.last_tone.note_count; i++) {
-        const llbeacon::audio_tone::Note &note = status.last_tone.notes[i];
-        truncated |= append_format(buf, sizeof(buf), &used, "{}{}:{}:{}",
-                                   i == 0 ? "" : ",", note.frequency_hz, note.duration_ms,
-                                   static_cast<unsigned>(note.volume));
-    }
+    const bool truncated = append_format(
+        buf, sizeof(buf), &used,
+        "supported: true\r\n"
+        "queued: {}\r\n"
+        "master_volume: {}\r\n"
+        "waveform: {}\r\n"
+        "last_note: {}:{}:{}",
+        status.queued, static_cast<unsigned>(status.master_volume),
+        llbeacon::audio_tone::waveform_name(status.waveform), status.last_note.frequency_hz,
+        status.last_note.duration_ms, static_cast<unsigned>(status.last_note.volume));
     if (truncated) {
         ESP_LOGW(TAG, "sound status text truncated");
     }
@@ -624,22 +618,15 @@ static void print_sound_status_json(EmbeddedCli *embedded_cli, const llbeacon::a
         return;
     }
 
-    char buf[1280];
+    char buf[320];
     size_t used = 0;
-    // note 一覧を JSON 配列として組み立てる。
-    bool truncated = append_format(
+    const bool truncated = append_format(
         buf, sizeof(buf), &used,
-        "{{\"supported\":true,\"playing\":{},\"master_volume\":{},\"waveform\":\"{}\",\"notes\":[",
-        status.playing ? "true" : "false", static_cast<unsigned>(status.master_volume),
-        llbeacon::audio_tone::waveform_name(status.last_tone.waveform));
-    for (uint32_t i = 0; i < status.last_tone.note_count; i++) {
-        const llbeacon::audio_tone::Note &note = status.last_tone.notes[i];
-        truncated |= append_format(buf, sizeof(buf), &used,
-                                   "{}{{\"frequency_hz\":{},\"duration_ms\":{},\"volume\":{}}}",
-                                   i == 0 ? "" : ",", note.frequency_hz, note.duration_ms,
-                                   static_cast<unsigned>(note.volume));
-    }
-    truncated |= append_format(buf, sizeof(buf), &used, "]}}");
+        "{{\"supported\":true,\"queued\":{},\"master_volume\":{},\"waveform\":\"{}\","
+        "\"last_note\":{{\"frequency_hz\":{},\"duration_ms\":{},\"volume\":{}}}}}",
+        status.queued, static_cast<unsigned>(status.master_volume),
+        llbeacon::audio_tone::waveform_name(status.waveform), status.last_note.frequency_hz,
+        status.last_note.duration_ms, static_cast<unsigned>(status.last_note.volume));
     if (truncated) {
         ESP_LOGW(TAG, "sound status json truncated");
     }
@@ -663,7 +650,7 @@ static void print_tone_help(EmbeddedCli *embedded_cli)
  * @brief "tone" コマンドのバインディング関数
  *
  * waveform と 1 個以上の note（周波数:ミリ秒[:音量]）をパースし、
- * audio_tone へシーケンス再生を要求する。
+ * audio_tone へ note 毎に再生を要求する。
  *
  * @param embedded_cli 呼び出し元のCLIインスタンス
  * @param args         トークン化済みの引数文字列
@@ -681,49 +668,151 @@ static void tone_command_binding(EmbeddedCli *embedded_cli, char *args, void *co
         return;
     }
 
-    llbeacon::audio_tone::ToneConfig config = {};
-    config.waveform = waveform;
+    if (!llbeacon::audio_tone::is_supported()) {
+        embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+        return;
+    }
 
     // token 位置は 1 始まりで、最後の token が token_count 番目になる。
     // index = 2..token_count が note 列。
+    uint32_t note_count = 0;
     const uint16_t token_count = embeddedCliGetTokenCount(args);
     for (uint16_t index = 2; index <= token_count; index++) {
         const char *note_token = embeddedCliGetToken(args, index);
         if (note_token == nullptr) {
             break;
         }
-        if (config.note_count >= llbeacon::audio_tone::kMaxNotes) {
+        if (note_count >= llbeacon::audio_tone::kMaxNotes) {
             embeddedCliPrint(embedded_cli, "ERR: too many notes (max 16)");
             return;
         }
-        if (!parse_note(note_token, &config.notes[config.note_count])) {
+        llbeacon::audio_tone::Note note;
+        if (!parse_note(note_token, &note)) {
             embeddedCliPrint(embedded_cli, "ERR: invalid note: ");
             embeddedCliPrint(embedded_cli, note_token);
             return;
         }
-        config.note_count++;
+        // 再生中でも受け付け、キューへ積んで順に再生させる。
+        if (!llbeacon::audio_tone::push(waveform, note)) {
+            embeddedCliPrint(embedded_cli, "ERR: sound queue is full");
+            return;
+        }
+        note_count++;
     }
 
-    if (config.note_count == 0) {
+    if (note_count == 0) {
         print_tone_help(embedded_cli);
-        return;
-    }
-
-    if (!llbeacon::audio_tone::is_supported()) {
-        embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
-        return;
-    }
-    if (!llbeacon::audio_tone::tone(config)) {
-        embeddedCliPrint(embedded_cli, "ERR: tone is busy");
         return;
     }
     embeddedCliPrint(embedded_cli, "OK");
 }
 
 /**
+ * @brief サブコマンドハンドラの関数ポインタ型
+ */
+using CommandHandler = void (*)(EmbeddedCli *embedded_cli, char *args);
+
+/**
+ * @brief サブコマンド名とハンドラのテーブルでコマンドを振り分ける
+ *
+ * サブコマンド名が table に無ければ fallback のヘルプを出力する。
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ * @param table        サブコマンド名とハンドラの組の配列
+ * @param fallback     サブコマンドが不明のときに出力する関数
+ */
+template <size_t N>
+static void dispatch_command(EmbeddedCli *embedded_cli, char *args,
+                             const std::pair<std::string_view, CommandHandler> (&table)[N],
+                             void (*fallback)(EmbeddedCli *))
+{
+    const char *sub = embeddedCliGetToken(args, 1);
+    if (sub != nullptr) {
+        for (const auto &[name, handler] : table) {
+            if (name == sub) {
+                handler(embedded_cli, args);
+                return;
+            }
+        }
+    }
+    fallback(embedded_cli);
+}
+
+/**
+ * @brief "sound volume" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void sound_volume_command(EmbeddedCli *embedded_cli, char *args)
+{
+    // master volume は永続設定なので、非対応ボードでは意味を持たない。
+    if (!llbeacon::audio_tone::is_supported()) {
+        embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+        return;
+    }
+
+    const char *target_token = embeddedCliGetToken(args, 2);
+    const char *value_token = embeddedCliGetToken(args, 3);
+    uint32_t value = 0;
+
+    if (target_token == nullptr || value_token == nullptr ||
+        std::strcmp(target_token, "master") != 0 ||
+        !parse_u32(value_token, SOUND_VOLUME_MIN, SOUND_VOLUME_MAX, &value)) {
+        embeddedCliPrint(embedded_cli, "ERR: usage: sound volume master <0-100>");
+        return;
+    }
+
+    llbeacon::audio_tone::set_master_volume(static_cast<uint8_t>(value));
+    embeddedCliPrint(embedded_cli, "OK");
+}
+
+/**
+ * @brief "sound stop" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void sound_stop_command(EmbeddedCli *embedded_cli, char *args)
+{
+    (void)args;
+    // stop も audio_tone の状態を変えるので、非対応ボードではエラーにする。
+    if (!llbeacon::audio_tone::is_supported()) {
+        embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
+        return;
+    }
+    llbeacon::audio_tone::stop();
+    embeddedCliPrint(embedded_cli, "OK");
+}
+
+/**
+ * @brief "sound status" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void sound_status_command(EmbeddedCli *embedded_cli, char *args)
+{
+    // --json が付いていれば JSON、無ければ人間向けテキストで出力する。
+    const char *option = embeddedCliGetToken(args, 2);
+    if (option != nullptr && std::strcmp(option, "--json") != 0) {
+        embeddedCliPrint(embedded_cli, "ERR: usage: sound status [--json]");
+        return;
+    }
+
+    const llbeacon::audio_tone::Status status = llbeacon::audio_tone::get_status();
+    if (option != nullptr) {
+        print_sound_status_json(embedded_cli, status);
+    } else {
+        print_sound_status_text(embedded_cli, status);
+    }
+}
+
+/**
  * @brief "sound" コマンドのバインディング関数
  *
- * サブコマンドを解釈して audio_tone へ再生要求や設定を行う。
+ * サブコマンド名で対応するハンドラへ振り分ける。
  *
  * @param embedded_cli 呼び出し元のCLIインスタンス
  * @param args         トークン化済みの引数文字列
@@ -732,72 +821,157 @@ static void tone_command_binding(EmbeddedCli *embedded_cli, char *args, void *co
 static void sound_command_binding(EmbeddedCli *embedded_cli, char *args, void *context)
 {
     (void)context;
+    static constexpr std::pair<std::string_view, CommandHandler> kTable[] = {
+        {"volume", sound_volume_command},
+        {"stop", sound_stop_command},
+        {"status", sound_status_command},
+    };
+    dispatch_command(embedded_cli, args, kTable, print_sound_help);
+}
 
-    // token 1 がサブコマンド名（token 0 は "sound" 本体）。
-    const char *sub = embeddedCliGetToken(args, 1);
-    if (sub == nullptr) {
-        print_sound_help(embedded_cli);
+/**
+ * @brief "led set" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void led_set_command(EmbeddedCli *embedded_cli, char *args)
+{
+    const char *pattern_token = embeddedCliGetToken(args, 2);
+    const char *rgb1_token = embeddedCliGetToken(args, 3);
+    const char *rgb2_token = embeddedCliGetToken(args, 4);
+    const char *period_token = embeddedCliGetToken(args, 5);
+
+    llbeacon::led_control::Pattern pattern;
+    uint32_t rgb1 = 0;
+    uint32_t rgb2 = 0;
+    uint32_t period_ms = 0;
+
+    if (pattern_token == nullptr || rgb1_token == nullptr || rgb2_token == nullptr ||
+        period_token == nullptr || !parse_pattern(pattern_token, &pattern) ||
+        !parse_hex_rgb(rgb1_token, &rgb1) || !parse_hex_rgb(rgb2_token, &rgb2) ||
+        !parse_u32(period_token, 100, 60000, &period_ms)) {
+        embeddedCliPrint(embedded_cli, "ERR: usage: led set <pulse|flash|saw|sine> <RRGGBB> <RRGGBB> <100-60000>");
         return;
     }
 
-    if (std::strcmp(sub, "volume") == 0) {
-        // master volume は永続設定なので、非対応ボードでは意味を持たない。
-        if (!llbeacon::audio_tone::is_supported()) {
-            embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
-            return;
-        }
+    llbeacon::led_control::set_lighting(pattern, rgb1, rgb2, period_ms);
+    embeddedCliPrint(embedded_cli, "OK");
+}
 
-        const char *target_token = embeddedCliGetToken(args, 2);
-        const char *value_token = embeddedCliGetToken(args, 3);
-        uint32_t value = 0;
-
-        if (target_token == nullptr || value_token == nullptr ||
-            std::strcmp(target_token, "master") != 0 ||
-            !parse_u32(value_token, SOUND_VOLUME_MIN, SOUND_VOLUME_MAX, &value)) {
-            embeddedCliPrint(embedded_cli, "ERR: usage: sound volume master <0-100>");
-            return;
-        }
-
-        llbeacon::audio_tone::set_master_volume(static_cast<uint8_t>(value));
-        embeddedCliPrint(embedded_cli, "OK");
+/**
+ * @brief "led max" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void led_max_command(EmbeddedCli *embedded_cli, char *args)
+{
+    const char *value_token = embeddedCliGetToken(args, 2);
+    uint32_t value = 0;
+    if (value_token == nullptr || !parse_u32(value_token, 0, 255, &value)) {
+        embeddedCliPrint(embedded_cli, "ERR: usage: led max <0-255>");
         return;
     }
 
-    if (std::strcmp(sub, "stop") == 0) {
-        // stop も audio_tone の状態を変えるので、非対応ボードではエラーにする。
-        if (!llbeacon::audio_tone::is_supported()) {
-            embeddedCliPrint(embedded_cli, "ERR: sound is not supported on this board");
-            return;
-        }
-        llbeacon::audio_tone::stop();
-        embeddedCliPrint(embedded_cli, "OK");
+    llbeacon::led_control::set_max_brightness(static_cast<uint8_t>(value));
+    embeddedCliPrint(embedded_cli, "OK");
+}
+
+/**
+ * @brief "led dim" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void led_dim_command(EmbeddedCli *embedded_cli, char *args)
+{
+    const char *target_token = embeddedCliGetToken(args, 2);
+    const char *percent_token = embeddedCliGetToken(args, 3);
+    llbeacon::led_control::DimmerTarget target;
+    uint32_t percent = 0;
+
+    if (target_token == nullptr || percent_token == nullptr ||
+        !parse_dimmer_target(target_token, &target) || !parse_u32(percent_token, 0, 100, &percent)) {
+        embeddedCliPrint(embedded_cli, "ERR: usage: led dim <active|dimmer1|dimmer2> <0-100>");
         return;
     }
 
-    if (std::strcmp(sub, "status") == 0) {
-        // --json が付いていれば JSON、無ければ人間向けテキストで出力する。
-        const char *option = embeddedCliGetToken(args, 2);
-        if (option != nullptr && std::strcmp(option, "--json") != 0) {
-            embeddedCliPrint(embedded_cli, "ERR: usage: sound status [--json]");
-            return;
-        }
+    llbeacon::led_control::set_dimmer_brightness(target, static_cast<uint8_t>(percent));
+    embeddedCliPrint(embedded_cli, "OK");
+}
 
-        const llbeacon::audio_tone::Status status = llbeacon::audio_tone::get_status();
-        if (option != nullptr) {
-            print_sound_status_json(embedded_cli, status);
-        } else {
-            print_sound_status_text(embedded_cli, status);
-        }
+/**
+ * @brief "led time" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void led_time_command(EmbeddedCli *embedded_cli, char *args)
+{
+    const char *target_token = embeddedCliGetToken(args, 2);
+    const char *seconds_token = embeddedCliGetToken(args, 3);
+    llbeacon::led_control::TimeTarget target;
+    uint32_t seconds = 0;
+
+    if (target_token == nullptr || seconds_token == nullptr ||
+        !parse_time_target(target_token, &target) || !parse_u32(seconds_token, 1, 86400, &seconds)) {
+        embeddedCliPrint(embedded_cli, "ERR: usage: led time <dimmer1|dimmer2|notification> <1-86400>");
         return;
     }
 
-    print_sound_help(embedded_cli);
+    llbeacon::led_control::set_dimmer_time(target, seconds);
+    embeddedCliPrint(embedded_cli, "OK");
+}
+
+/**
+ * @brief "led mode" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void led_mode_command(EmbeddedCli *embedded_cli, char *args)
+{
+    const char *mode_token = embeddedCliGetToken(args, 2);
+    llbeacon::led_control::Mode mode;
+
+    if (mode_token == nullptr || !parse_mode(mode_token, &mode)) {
+        embeddedCliPrint(embedded_cli,
+                         "ERR: usage: led mode <active|dimmer1|dimmer2|sleep|notification>");
+        return;
+    }
+
+    llbeacon::led_control::set_mode(mode);
+    embeddedCliPrint(embedded_cli, "OK");
+}
+
+/**
+ * @brief "led status" サブコマンドを処理する
+ *
+ * @param embedded_cli CLIインスタンス
+ * @param args         トークン化済みの引数文字列
+ */
+static void led_status_command(EmbeddedCli *embedded_cli, char *args)
+{
+    // --json が付いていれば JSON、無ければ人間向けテキストで出力する。
+    const char *option = embeddedCliGetToken(args, 2);
+    if (option != nullptr && std::strcmp(option, "--json") != 0) {
+        embeddedCliPrint(embedded_cli, "ERR: usage: led status [--json]");
+        return;
+    }
+
+    const llbeacon::led_control::Status status = llbeacon::led_control::get_status();
+    if (option != nullptr) {
+        print_status_json(embedded_cli, status);
+    } else {
+        print_status_text(embedded_cli, status);
+    }
 }
 
 /**
  * @brief "led" コマンドのバインディング関数
  *
- * サブコマンドを解釈して led_control の setter を呼び出す。
+ * サブコマンド名で対応するハンドラへ振り分ける。
  *
  * @param embedded_cli 呼び出し元のCLIインスタンス
  * @param args         トークン化済みの引数文字列
@@ -806,116 +980,15 @@ static void sound_command_binding(EmbeddedCli *embedded_cli, char *args, void *c
 static void led_command_binding(EmbeddedCli *embedded_cli, char *args, void *context)
 {
     (void)context;
-
-    const char *sub = embeddedCliGetToken(args, 1);
-    if (sub == nullptr) {
-        print_led_help(embedded_cli);
-        return;
-    }
-
-    if (std::strcmp(sub, "set") == 0) {
-        const char *pattern_token = embeddedCliGetToken(args, 2);
-        const char *rgb1_token = embeddedCliGetToken(args, 3);
-        const char *rgb2_token = embeddedCliGetToken(args, 4);
-        const char *period_token = embeddedCliGetToken(args, 5);
-
-        llbeacon::led_control::Pattern pattern;
-        uint32_t rgb1 = 0;
-        uint32_t rgb2 = 0;
-        uint32_t period_ms = 0;
-
-        if (pattern_token == nullptr || rgb1_token == nullptr || rgb2_token == nullptr ||
-            period_token == nullptr || !parse_pattern(pattern_token, &pattern) ||
-            !parse_hex_rgb(rgb1_token, &rgb1) || !parse_hex_rgb(rgb2_token, &rgb2) ||
-            !parse_u32(period_token, 100, 60000, &period_ms)) {
-            embeddedCliPrint(embedded_cli, "ERR: usage: led set <pulse|flash|saw|sine> <RRGGBB> <RRGGBB> <100-60000>");
-            return;
-        }
-
-        llbeacon::led_control::set_lighting(pattern, rgb1, rgb2, period_ms);
-        embeddedCliPrint(embedded_cli, "OK");
-        return;
-    }
-
-    if (std::strcmp(sub, "max") == 0) {
-        const char *value_token = embeddedCliGetToken(args, 2);
-        uint32_t value = 0;
-        if (value_token == nullptr || !parse_u32(value_token, 0, 255, &value)) {
-            embeddedCliPrint(embedded_cli, "ERR: usage: led max <0-255>");
-            return;
-        }
-
-        llbeacon::led_control::set_max_brightness(static_cast<uint8_t>(value));
-        embeddedCliPrint(embedded_cli, "OK");
-        return;
-    }
-
-    if (std::strcmp(sub, "dim") == 0) {
-        const char *target_token = embeddedCliGetToken(args, 2);
-        const char *percent_token = embeddedCliGetToken(args, 3);
-        llbeacon::led_control::DimmerTarget target;
-        uint32_t percent = 0;
-
-        if (target_token == nullptr || percent_token == nullptr ||
-            !parse_dimmer_target(target_token, &target) || !parse_u32(percent_token, 0, 100, &percent)) {
-            embeddedCliPrint(embedded_cli, "ERR: usage: led dim <active|dimmer1|dimmer2> <0-100>");
-            return;
-        }
-
-        llbeacon::led_control::set_dimmer_brightness(target, static_cast<uint8_t>(percent));
-        embeddedCliPrint(embedded_cli, "OK");
-        return;
-    }
-
-    if (std::strcmp(sub, "time") == 0) {
-        const char *target_token = embeddedCliGetToken(args, 2);
-        const char *seconds_token = embeddedCliGetToken(args, 3);
-        llbeacon::led_control::TimeTarget target;
-        uint32_t seconds = 0;
-
-        if (target_token == nullptr || seconds_token == nullptr ||
-            !parse_time_target(target_token, &target) || !parse_u32(seconds_token, 1, 86400, &seconds)) {
-            embeddedCliPrint(embedded_cli, "ERR: usage: led time <dimmer1|dimmer2|notification> <1-86400>");
-            return;
-        }
-
-        llbeacon::led_control::set_dimmer_time(target, seconds);
-        embeddedCliPrint(embedded_cli, "OK");
-        return;
-    }
-
-    if (std::strcmp(sub, "mode") == 0) {
-        const char *mode_token = embeddedCliGetToken(args, 2);
-        llbeacon::led_control::Mode mode;
-
-        if (mode_token == nullptr || !parse_mode(mode_token, &mode)) {
-            embeddedCliPrint(embedded_cli,
-                             "ERR: usage: led mode <active|dimmer1|dimmer2|sleep|notification>");
-            return;
-        }
-
-        llbeacon::led_control::set_mode(mode);
-        embeddedCliPrint(embedded_cli, "OK");
-        return;
-    }
-
-    if (std::strcmp(sub, "status") == 0) {
-        const char *option = embeddedCliGetToken(args, 2);
-        if (option != nullptr && std::strcmp(option, "--json") != 0) {
-            embeddedCliPrint(embedded_cli, "ERR: usage: led status [--json]");
-            return;
-        }
-
-        const llbeacon::led_control::Status status = llbeacon::led_control::get_status();
-        if (option != nullptr) {
-            print_status_json(embedded_cli, status);
-        } else {
-            print_status_text(embedded_cli, status);
-        }
-        return;
-    }
-
-    print_led_help(embedded_cli);
+    static constexpr std::pair<std::string_view, CommandHandler> kTable[] = {
+        {"set", led_set_command},
+        {"max", led_max_command},
+        {"dim", led_dim_command},
+        {"time", led_time_command},
+        {"mode", led_mode_command},
+        {"status", led_status_command},
+    };
+    dispatch_command(embedded_cli, args, kTable, print_led_help);
 }
 
 /**

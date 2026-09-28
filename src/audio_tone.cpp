@@ -1,9 +1,11 @@
 #include "audio_tone.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -42,19 +44,27 @@ const char *waveform_name(Waveform waveform)
 #define AUDIO_TONE_DEFAULT_MASTER_VOLUME 60
 #define AUDIO_TONE_CODEC_VOLUME 60
 #define AUDIO_TONE_CHUNK_FRAMES 512
+#define AUDIO_TONE_VOLUME_MAX 100
 
 #define AUDIO_TONE_I2C_PORT I2C_NUM_0
 #define AUDIO_TONE_I2C_FREQ_HZ 100000
 #define AUDIO_TONE_ES8311_ADDR ES8311_CODEC_DEFAULT_ADDR
 #define AUDIO_TONE_PI4IOE_ADDR 0x43
 
-#define AUDIO_TONE_QUEUE_LENGTH 1
 #define AUDIO_TONE_TASK_STACK_SIZE 4096
 #define AUDIO_TONE_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
 
 static constexpr float kPi = 3.14159265358979f;
 static constexpr float k2Pi = 2.0f * kPi;
 static const char *TAG = "audio_tone";
+
+/**
+ * @brief 再生キューに入れる 1 音（または無音）
+ */
+struct Sound {
+    Waveform waveform;  ///< 波形
+    Note note;           ///< 音(周波数 0 は無音)
+};
 
 static i2c_master_bus_handle_t i2c_bus;
 static i2c_master_dev_handle_t pi4ioe_dev;
@@ -63,15 +73,11 @@ static esp_codec_dev_handle_t codec_dev;
 static bool audio_ready = false;
 
 static QueueHandle_t tone_queue;
-static std::atomic<bool> playing{false};
-static std::atomic<bool> stop_requested{false};
 static std::atomic<uint32_t> master_volume{AUDIO_TONE_DEFAULT_MASTER_VOLUME};
 
-static ToneConfig last_config = {
-    .waveform = Waveform::SINE,
-    .note_count = 1,
-    .notes = {Note{880, 200, 80}},
-};
+// status 用に最後に push された 1 音を覚えておく(CLI タスクのみアクセス)。
+static Waveform last_waveform = Waveform::SINE;
+static Note last_note = {880, 200, 80};
 
 /**
  * @brief PolyBLEP によるエッジ補正値を計算する
@@ -105,10 +111,48 @@ static float poly_blep(float t, float dt)
 }
 
 /**
+ * @brief SQUARE 波のサンプル値を計算する
+ *
+ * ナイーブな矩形波へ PolyBLEP 補正を加え、エイリアシングを抑える。
+ *
+ * @param phase 位相(0.0 <= phase < 2*pi)
+ * @param dt    1サンプルあたりの位相増分(0.0 < dt < 1.0)
+ * @return サンプル値(-1.0..1.0)
+ */
+static float square_value(float phase, float dt)
+{
+    const float t = phase / k2Pi;
+    float value = phase < kPi ? 1.0f : -1.0f;
+    // 立ち上がり(t=0)と立ち下がり(t=0.5)の両エッジを補正する。
+    value += poly_blep(t, dt);
+    float falling_edge = t + 0.5f;
+    if (falling_edge >= 1.0f) {
+        falling_edge -= 1.0f;
+    }
+    return value - poly_blep(falling_edge, dt);
+}
+
+/**
+ * @brief SAW 波のサンプル値を計算する
+ *
+ * ナイーブなのこぎり波へ PolyBLEP 補正を加え、エイリアシングを抑える。
+ *
+ * @param phase 位相(0.0 <= phase < 2*pi)
+ * @param dt    1サンプルあたりの位相増分(0.0 < dt < 1.0)
+ * @return サンプル値(-1.0..1.0)
+ */
+static float saw_value(float phase, float dt)
+{
+    const float t = phase / k2Pi;
+    const float value = (2.0f * t) - 1.0f;
+    // 立ち下がり(t=0)のエッジを補正する。
+    return value - poly_blep(t, dt);
+}
+
+/**
  * @brief 波形と位相から -1.0..1.0 のサンプル値を計算する
  *
- * SINE は素直な sin を返す。SQUARE / SAW はナイーブ波形へ PolyBLEP 補正を
- * 加え、エイリアシングを抑えた band-limited 相当の波形にする。
+ * SINE は素直な sin を返す。SQUARE / SAW はそれぞれの生成関数へ委譲する。
  *
  * @param waveform 波形
  * @param phase    位相(0.0 <= phase < 2*pi)
@@ -120,24 +164,10 @@ static float waveform_value(Waveform waveform, float phase, float dt)
     switch (waveform) {
     case Waveform::SINE:
         return std::sin(phase);
-    case Waveform::SQUARE: {
-        const float t = phase / k2Pi;
-        float value = phase < kPi ? 1.0f : -1.0f;
-        // 立ち上がり(t=0)と立ち下がり(t=0.5)の両エッジを補正する。
-        value += poly_blep(t, dt);
-        float falling_edge = t + 0.5f;
-        if (falling_edge >= 1.0f) {
-            falling_edge -= 1.0f;
-        }
-        value -= poly_blep(falling_edge, dt);
-        return value;
-    }
-    case Waveform::SAW: {
-        const float t = phase / k2Pi;
-        const float value = (2.0f * t) - 1.0f;
-        // 立ち下がり(t=0)のエッジを補正する。
-        return value - poly_blep(t, dt);
-    }
+    case Waveform::SQUARE:
+        return square_value(phase, dt);
+    case Waveform::SAW:
+        return saw_value(phase, dt);
     }
     return 0.0f;
 }
@@ -152,13 +182,15 @@ static float waveform_value(Waveform waveform, float phase, float dt)
  */
 static float waveform_scale(Waveform waveform)
 {
-    switch (waveform) {
-    case Waveform::SINE:
-        return 1.0f;
-    case Waveform::SQUARE:
-        return 0.7071f;
-    case Waveform::SAW:
-        return 1.0f;
+    static constexpr std::pair<Waveform, float> kTable[] = {
+        {Waveform::SINE, 1.0f},
+        {Waveform::SQUARE, 0.7071f},
+        {Waveform::SAW, 1.0f},
+    };
+    for (const auto &[entry_waveform, scale] : kTable) {
+        if (entry_waveform == waveform) {
+            return scale;
+        }
     }
     return 1.0f;
 }
@@ -175,10 +207,8 @@ static bool write_silence(uint32_t frames)
     std::memset(zero, 0, sizeof(zero));
 
     while (frames > 0) {
-        uint32_t chunk_frames = frames;
-        if (chunk_frames > AUDIO_TONE_CHUNK_FRAMES) {
-            chunk_frames = AUDIO_TONE_CHUNK_FRAMES;
-        }
+        const uint32_t chunk_frames =
+            std::min(frames, static_cast<uint32_t>(AUDIO_TONE_CHUNK_FRAMES));
         const int bytes = static_cast<int>(chunk_frames * AUDIO_TONE_CHANNELS * sizeof(int16_t));
         if (esp_codec_dev_write(codec_dev, zero, bytes) != ESP_CODEC_DEV_OK) {
             return false;
@@ -189,10 +219,65 @@ static bool write_silence(uint32_t frames)
 }
 
 /**
- * @brief tone シーケンス再生専用タスク本体
+ * @brief 1 音（または無音）を I2S へ出力する
  *
- * キュー経由で受け取った ToneConfig を先頭の note から順に再生する。
- * STOP 要求は stop_requested フラグで受け取り、note 間・チャンク境界で停止する。
+ * 音の繋ぎ目の不連続を避けるため、位相は呼び出し側で引き継ぐ。
+ *
+ * @param sound 再生する音
+ * @param phase 位相(入出力)
+ * @return 成功なら true
+ */
+static bool render_sound(const Sound &sound, float &phase)
+{
+    // 波形バッファはタスクスタックに置くと大きいため static にする。
+    static int16_t chunk[AUDIO_TONE_CHUNK_FRAMES * AUDIO_TONE_CHANNELS];
+    const uint32_t note_frames = AUDIO_TONE_SAMPLE_RATE * sound.note.duration_ms / 1000;
+
+    if (sound.note.frequency_hz == 0) {
+        // 無音はサイレンスを書き、次の音のために位相をリセットする。
+        phase = 0.0f;
+        return write_silence(note_frames);
+    }
+
+    // 最終音量 = master volume x note volume を線形ゲインとして計算し、
+    // 波形ごとの補正係数を掛けて PCM 振幅を決める。
+    const float gain = (static_cast<float>(master_volume.load()) / 100.0f) *
+                       (static_cast<float>(sound.note.volume) / 100.0f);
+    const int16_t amplitude = static_cast<int16_t>(
+        AUDIO_TONE_BASE_AMPLITUDE * gain * waveform_scale(sound.waveform));
+
+    // 1サンプルごとに進める位相。PolyBLEP 用に 1周期=1.0 表記も用意する。
+    const float phase_step = k2Pi * sound.note.frequency_hz / AUDIO_TONE_SAMPLE_RATE;
+    const float blep_dt = phase_step / k2Pi;
+
+    for (uint32_t frame = 0; frame < note_frames; frame += AUDIO_TONE_CHUNK_FRAMES) {
+        // 残りフレームをチャンク単位に分割して書き込む。
+        const uint32_t frames =
+            std::min(note_frames - frame, static_cast<uint32_t>(AUDIO_TONE_CHUNK_FRAMES));
+        // 左右同じサンプルを入れ、ステレオとして書き込む。
+        for (uint32_t i = 0; i < frames; i++) {
+            const int16_t sample = static_cast<int16_t>(
+                amplitude * waveform_value(sound.waveform, phase, blep_dt));
+            chunk[i * AUDIO_TONE_CHANNELS] = sample;
+            chunk[i * AUDIO_TONE_CHANNELS + 1] = sample;
+            phase += phase_step;
+            // phase を 0..2pi の範囲に保つ。
+            if (phase >= k2Pi) {
+                phase -= k2Pi;
+            }
+        }
+        const int bytes = static_cast<int>(frames * AUDIO_TONE_CHANNELS * sizeof(int16_t));
+        if (esp_codec_dev_write(codec_dev, chunk, bytes) != ESP_CODEC_DEV_OK) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * @brief tone 再生専用タスク本体
+ *
+ * キュー経由で受け取った音（または無音）を順に再生する。
  *
  * @param arg 未使用
  */
@@ -200,88 +285,20 @@ static void audio_tone_task(void *arg)
 {
     (void)arg;
 
-    // 波形バッファはタスクスタックに置くと大きいため static にする。
-    static int16_t chunk[AUDIO_TONE_CHUNK_FRAMES * AUDIO_TONE_CHANNELS];
-    ToneConfig config;
-
+    // 音の繋ぎ目の不連続を避けるため、位相は音をまたいで引き継ぐ。
+    float phase = 0.0f;
     while (true) {
-        // 1件の tone 要求を受け取るまで待機する。
-        if (xQueueReceive(tone_queue, &config, portMAX_DELAY) != pdTRUE) {
+        // 1音の再生要求を受け取るまで待機する。
+        Sound sound;
+        if (xQueueReceive(tone_queue, &sound, portMAX_DELAY) != pdTRUE) {
             continue;
         }
-
-        // 再生中フラグは tone() 側で受理時に立てている。ここでは再生を開始する。
-        bool write_failed = false;
-        float phase = 0.0f;
-
-        // シーケンスを先頭から順に再生する。stop 要求が来たらループを抜ける。
-        for (uint32_t note_index = 0; note_index < config.note_count && !stop_requested.load();
-             note_index++) {
-            const Note &note = config.notes[note_index];
-            const uint32_t note_frames = AUDIO_TONE_SAMPLE_RATE * note.duration_ms / 1000;
-
-            if (note.frequency_hz == 0) {
-                // 無音 note はサイレンスを書き、次の音のために位相をリセットする。
-                if (!write_silence(note_frames)) {
-                    write_failed = true;
-                    break;
-                }
-                phase = 0.0f;
-                continue;
-            }
-
-            // 最終音量 = master volume x note volume を線形ゲインとして計算し、
-            // 波形ごとの補正係数を掛けて PCM 振幅を決める。
-            const float gain = (static_cast<float>(master_volume.load()) / 100.0f) *
-                               (static_cast<float>(note.volume) / 100.0f);
-            const int16_t amplitude = static_cast<int16_t>(
-                AUDIO_TONE_BASE_AMPLITUDE * gain * waveform_scale(config.waveform));
-
-            // 1サンプルごとに進める位相。PolyBLEP 用に 1周期=1.0 表記も用意する。
-            const float phase_step = k2Pi * note.frequency_hz / AUDIO_TONE_SAMPLE_RATE;
-            const float blep_dt = phase_step / k2Pi;
-
-            // phase は非無音 note 間で引き継ぎ、note 境界の不連続を避ける。
-            uint32_t frame = 0;
-            while (frame < note_frames && !stop_requested.load()) {
-                // 残りフレームをチャンク単位に分割して書き込む。
-                uint32_t frames = note_frames - frame;
-                if (frames > AUDIO_TONE_CHUNK_FRAMES) {
-                    frames = AUDIO_TONE_CHUNK_FRAMES;
-                }
-                // 左右同じサンプルを入れ、ステレオとして書き込む。
-                for (uint32_t i = 0; i < frames; i++) {
-                    const int16_t sample = static_cast<int16_t>(
-                        amplitude * waveform_value(config.waveform, phase, blep_dt));
-                    chunk[i * AUDIO_TONE_CHANNELS] = sample;
-                    chunk[i * AUDIO_TONE_CHANNELS + 1] = sample;
-                    phase += phase_step;
-                    // phase を 0..2pi の範囲に保つ。
-                    if (phase >= k2Pi) {
-                        phase -= k2Pi;
-                    }
-                }
-                const int bytes =
-                    static_cast<int>(frames * AUDIO_TONE_CHANNELS * sizeof(int16_t));
-                if (esp_codec_dev_write(codec_dev, chunk, bytes) != ESP_CODEC_DEV_OK) {
-                    write_failed = true;
-                    stop_requested.store(true);
-                    break;
-                }
-                frame += frames;
-            }
-        }
-
-        if (write_failed) {
+        if (!render_sound(sound, phase)) {
             ESP_LOGE(TAG, "failed to write tone data");
         }
 
         // DMA に残った音を落ち着かせるため、短い無音を流す。
         write_silence(AUDIO_TONE_CHUNK_FRAMES);
-
-        // 再生完了（または停止）。次の tone を受け付けられる状態へ戻す。
-        stop_requested.store(false);
-        playing.store(false);
     }
 }
 
@@ -498,8 +515,9 @@ void start(void)
         return;
     }
 
-    // tone 要求を再生タスクへ渡すキュー。同時再生は 1 件だけなので長さ 1。
-    tone_queue = xQueueCreate(AUDIO_TONE_QUEUE_LENGTH, sizeof(ToneConfig));
+    // 再生要求を再生タスクへ渡すキュー。1コマンドで最大 kMaxNotes 音を
+    // 連続して入れられるようにする。
+    tone_queue = xQueueCreate(kMaxNotes, sizeof(Sound));
     if (tone_queue == nullptr) {
         ESP_LOGE(TAG, "failed to create tone queue");
         return;
@@ -518,62 +536,47 @@ void start(void)
     ESP_LOGI(TAG, "audio_tone ready");
 }
 
-/** @copydoc tone */
-bool tone(const ToneConfig &config)
+/** @copydoc push */
+bool push(Waveform waveform, const Note &note)
 {
-    // 初期化済みで、かつ現在再生していない場合だけ要求を受け付ける。
-    // 受理直後から status に反映させるため、ここで playing を先に立てる。
     if (!audio_ready) {
         return false;
     }
-    bool expected = false;
-    if (!playing.compare_exchange_strong(expected, true)) {
+
+    // CLI 以外から直接呼ばれても安全なように、音量を正規化する。
+    const Sound sound = {
+        .waveform = waveform,
+        .note = {
+            .frequency_hz = note.frequency_hz,
+            .duration_ms = note.duration_ms,
+            .volume = std::min(note.volume, static_cast<uint8_t>(AUDIO_TONE_VOLUME_MAX)),
+        },
+    };
+
+    // 再生中でも常に受け付け、キューへ積んで順に再生させる。
+    if (xQueueSend(tone_queue, &sound, 0) != pdTRUE) {
         return false;
     }
 
-    // CLI 以外から直接呼ばれても安全なように、note 数と音量を正規化する。
-    ToneConfig clamped = config;
-    if (clamped.note_count > kMaxNotes) {
-        clamped.note_count = kMaxNotes;
-    }
-    for (uint32_t i = 0; i < clamped.note_count; i++) {
-        if (clamped.notes[i].volume > 100) {
-            clamped.notes[i].volume = 100;
-        }
-    }
-
-    // 前回の stop 要求を新しい再生に持ち越さないため、受付時にクリアする。
-    // キューが満杯で受け付けられなかった場合は、保留中の stop 要求を元に戻す。
-    const bool stop_was_requested = stop_requested.load();
-    stop_requested.store(false);
-
-    if (xQueueSend(tone_queue, &clamped, 0) != pdTRUE) {
-        if (stop_was_requested) {
-            stop_requested.store(true);
-        }
-        playing.store(false);
-        return false;
-    }
-
-    // 受け付けた設定を status 用に覚えておく。
-    last_config = clamped;
+    // status 用に最後に push された 1 音を覚えておく。
+    last_waveform = waveform;
+    last_note = sound.note;
     return true;
 }
 
 /** @copydoc stop */
 void stop(void)
 {
-    // 再生タスクがチャンク境界でこのフラグを見て停止する。
-    stop_requested.store(true);
+    // 再生待ちの音を全て破棄する。再生中の 1 音は最後まで再生される。
+    if (tone_queue != nullptr) {
+        xQueueReset(tone_queue);
+    }
 }
 
 /** @copydoc set_master_volume */
 void set_master_volume(uint8_t volume)
 {
-    if (volume > 100) {
-        volume = 100;
-    }
-    master_volume.store(volume);
+    master_volume.store(std::min(volume, static_cast<uint8_t>(AUDIO_TONE_VOLUME_MAX)));
 }
 
 /** @copydoc get_status */
@@ -581,9 +584,11 @@ Status get_status(void)
 {
     const Status status = {
         .supported = audio_ready,
-        .playing = playing.load(),
+        .queued =
+            tone_queue != nullptr ? static_cast<uint32_t>(uxQueueMessagesWaiting(tone_queue)) : 0,
         .master_volume = static_cast<uint8_t>(master_volume.load()),
-        .last_tone = last_config,
+        .waveform = last_waveform,
+        .last_note = last_note,
     };
     return status;
 }

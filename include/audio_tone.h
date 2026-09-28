@@ -26,45 +26,40 @@ struct Note {
 };
 
 /**
- * @brief 1回の tone 再生要求の設定
- */
-struct ToneConfig {
-    Waveform waveform;      ///< 波形
-    uint32_t note_count;    ///< 有効な note 数(1..kMaxNotes)
-    Note notes[kMaxNotes];  ///< 先頭から順に再生する note
-};
-
-/**
  * @brief 音声再生の現在状態
  */
 struct Status {
-    bool supported;          ///< このボードで音声が使えるか
-    bool playing;            ///< 再生中か
-    uint8_t master_volume;   ///< master volume(0-100)
-    ToneConfig last_tone;    ///< 最後に受け付けた tone 設定
+    bool supported;        ///< このボードで音声が使えるか
+    uint32_t queued;        ///< 再生待ちの音数
+    uint8_t master_volume;  ///< master volume(0-100)
+    Waveform waveform;      ///< 最後に push した波形
+    Note last_note;         ///< 最後に push した音
 };
 
 /**
  * @brief 音声再生モジュールを初期化する
  *
- * AtomS3 Lite + Atomic Voice Base では I2C / I2S / ES8311 を初期化し、
- * 再生専用タスクを起動する。他のボードでは何もしない。
+ * Atom Lite / AtomS3 Lite + Atomic Voice Base では I2C / I2S / ES8311 を
+ * 初期化し、再生専用タスクを起動する。
  */
 void start(void);
 
 /**
- * @brief tone シーケンスを再生要求する
+ * @brief 1 音（または無音）を再生キューへ追加する
  *
- * 再生は専用タスクで非同期に行われる。再生中に呼んだ場合は false を返す。
- * 各 note の最終音量は master volume と note.volume の積になる。
+ * 再生は専用タスクで非同期に行われる。再生中でもキューへ追加でき、
+ * 順に再生される。各音の最終音量は master volume と note.volume の積になる。
  *
- * @param config 再生設定
- * @return 要求を受け付けたなら true
+ * @param waveform 波形
+ * @param note     追加する音(周波数 0 は無音)
+ * @return キューへ追加できたなら true(満杯なら false)
  */
-bool tone(const ToneConfig &config);
+bool push(Waveform waveform, const Note &note);
 
 /**
- * @brief 再生中の tone を停止する
+ * @brief 再生待ちの音を全て破棄する
+ *
+ * 再生中の 1 音は最後まで再生される。
  */
 void stop(void);
 
